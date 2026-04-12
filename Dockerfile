@@ -15,6 +15,7 @@ FROM node:22-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates tini && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist

@@ -131,10 +131,12 @@ export function runAgent(
 
     const handleLine = (line: string) => {
       if (!line.trim()) return;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let msg: any;
       try {
         msg = JSON.parse(line);
       } catch {
+        // ignore malformed lines
         return;
       }
 
@@ -186,7 +188,7 @@ export function runAgent(
       try {
         process.kill(-proc.pid, signal);
       } catch {
-        try { proc.kill(signal); } catch {}
+        try { proc.kill(signal); } catch { /* ignore */ }
       }
     };
 

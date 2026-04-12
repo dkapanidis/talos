@@ -13,7 +13,7 @@ function extensionFromUrlOrType(url: string, contentType?: string | null): strin
     const path = new URL(url).pathname;
     const ext = path.split(".").pop()?.toLowerCase();
     if (ext && /^[a-z0-9]{1,8}$/.test(ext)) return ext;
-  } catch {}
+  } catch { /* ignore invalid URL */ }
   if (contentType) {
     const sub = contentType.split("/")[1]?.split(";")[0]?.trim().toLowerCase();
     if (sub && /^[a-z0-9.+-]{1,16}$/.test(sub)) return sub.replace(/[+.]/g, "_");
@@ -199,7 +199,8 @@ export class LinearService {
     agentSessionId: string,
     candidates: Array<{ slug: string; repoConfig: RepoConfig }>,
   ): Promise<void> {
-    await this.client.createAgentActivity({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (this.client.createAgentActivity as any)({
       agentSessionId,
       content: {
         type: "elicitation",
@@ -209,7 +210,7 @@ export class LinearService {
       signalMetadata: {
         options: candidates.map((c) => ({ label: c.slug, value: c.slug })),
       },
-    } as any);
+    });
   }
 
   /** Post a comment on a Linear issue. */

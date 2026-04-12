@@ -1,0 +1,25 @@
+{
+  "name": "talos",
+  "version": "1.0.0",
+  "description": "Talos background agent powered by Claude Code",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch & node --watch dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@linear/sdk": "^81.0.0",
+    "fastify": "^5.8.4",
+    "js-yaml": "^4.1.1"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.2"
+  }
+}

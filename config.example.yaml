@@ -1,0 +1,66 @@
+# Linear Agent Configuration
+
+# --- Linear authentication ---
+# Option A: personal API key (simple, but cannot author agent activities).
+#   Use this for the comment-based fallback path.
+linearApiKey: "lin_api_..."
+
+# Option B: OAuth app credentials (required for Agent Session activities).
+#   Obtained by installing your OAuth app with actor=app. See README for the
+#   full install flow. If linearAccessToken is set, it takes precedence over
+#   linearApiKey.
+linearAccessToken: ""     # access_token from the OAuth token exchange
+linearRefreshToken: ""    # refresh_token from the OAuth token exchange
+linearClientId: ""        # OAuth app client id (used only for refresh)
+linearClientSecret: ""    # OAuth app client secret (used only for refresh)
+
+# Webhook secret for verifying Linear webhook signatures.
+# For OAuth agent apps this is the signing secret shown on the application page.
+linearWebhookSecret: "your-webhook-secret"
+
+# GitHub token for cloning private repos and creating PRs (or set GH_TOKEN env var)
+githubToken: "ghp_..."
+
+# Server settings
+server:
+  port: 3000
+  host: "0.0.0.0"
+
+# Bot user: the Linear user (or agent OAuth app user) whose delegation triggers the agent
+# For an agent OAuth app, this is the delegate id seen in Issue webhook payloads
+botUserId: "your-linear-user-id"
+
+# Bot mention handle: the @name used to mention the agent in comments (without the @)
+# e.g. if you write "@jarvis" in Linear, set this to "jarvis"
+botMentionName: "jarvis"
+
+# Base directory for cloning repos and creating worktrees
+workDir: "./work"
+
+# Global system prompt applied to all repos
+systemPrompt: |
+  You are an autonomous coding agent. You have been assigned a Linear issue to work on.
+  - Read the issue carefully and understand what needs to be done.
+  - Explore the codebase to understand the relevant code.
+  - Implement the changes needed.
+  - Run tests if they exist.
+  - Commit your changes and push to a new branch.
+  - Create a PR with a clear description.
+
+# Per-repo configuration
+repos:
+  owner/repo-name:
+    url: "https://github.com/owner/repo-name"
+    # Optional: override the global system prompt for this repo
+    systemPrompt: |
+      - Always push on branches matching the Linear git branch naming convention.
+      - Run `npm test` before committing.
+      - Use conventional commits (feat:, fix:, chore:).
+    # Optional: specific Linear team IDs that map to this repo
+    teamIds:
+      - "TEAM-1"
+    # Optional: issue labels that route an issue to this repo (case-insensitive).
+    # Labels take precedence over teamIds. If multiple repos remain ambiguous,
+    # the agent posts a select-elicitation asking the user to pick.
+    labels:
+      - "repo:frontend"

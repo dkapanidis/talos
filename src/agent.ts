@@ -18,7 +18,7 @@ interface AgentResult {
   output: string;
 }
 
-function summarizeToolInput(tool: string, input: unknown): string {
+export function summarizeToolInput(tool: string, input: unknown): string {
   if (!input || typeof input !== "object") return "";
   const obj = input as Record<string, unknown>;
   const pick = (k: string) => (typeof obj[k] === "string" ? (obj[k] as string) : undefined);
@@ -53,7 +53,7 @@ export interface AgentEvent {
   parameter?: string;
 }
 
-function buildPrompt(config: Config, repoConfig: RepoConfig | undefined, issue: IssueContext): string {
+export function buildPrompt(config: Config, repoConfig: RepoConfig | undefined, issue: IssueContext): string {
   const parts: string[] = [];
 
   // Layer 1: global system prompt

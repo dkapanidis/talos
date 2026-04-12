@@ -4,11 +4,11 @@ import { LinearClient } from "@linear/sdk";
 import type { IssueContext } from "./agent.js";
 import type { Config, RepoConfig } from "./config.js";
 
-function safeFilename(name: string): string {
+export function safeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
 }
 
-function extensionFromUrlOrType(url: string, contentType?: string | null): string {
+export function extensionFromUrlOrType(url: string, contentType?: string | null): string {
   try {
     const path = new URL(url).pathname;
     const ext = path.split(".").pop()?.toLowerCase();

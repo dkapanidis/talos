@@ -77,6 +77,7 @@ export function createServer(
     // Agent API: AgentSessionEvent fires when the agent is assigned or prompted
     if (payload.type === "AgentSessionEvent") {
       const session = payload.agentSession;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const issueId = session?.issue?.id ?? (payload.data as any)?.issue?.id;
       const sessionId = session?.id;
       const activity = payload.agentActivity;
@@ -90,6 +91,7 @@ export function createServer(
         app.log.info(`Agent session ${payload.action} for issue ${issueId}, starting agent...`);
         const promptBody =
           activity?.body ??
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
           (typeof activity?.content === "object" ? (activity?.content as any)?.body : undefined);
         onIssueAssigned(issueId, sessionId, promptBody).catch((err) => {
           app.log.error(err, `Failed to handle issue ${issueId}`);

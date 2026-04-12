@@ -175,3 +175,13 @@ app.listen({ port: config.server.port, host: config.server.host }, (err) => {
   }
   console.log(`Linear agent listening on ${config.server.host}:${config.server.port}`);
 });
+
+const shutdown = async (signal: string) => {
+  console.log(`Received ${signal}, shutting down…`);
+  for (const [id] of sessionAborts) cancelSession(id);
+  await app.close();
+  process.exit(0);
+};
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

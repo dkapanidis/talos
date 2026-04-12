@@ -32,8 +32,8 @@ Prompts are composed in three layers:
 ### 1. Install dependencies
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ### 2. Create a bot user in Linear
@@ -88,7 +88,7 @@ The `teamIds` field maps a Linear team key to a repo. If you only have one repo 
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
-npm start
+bun run dev
 ```
 
 Or pass a custom config path:

@@ -7,7 +7,7 @@ RUN bun install --frozen-lockfile
 
 FROM base AS build
 COPY --from=deps /app/node_modules ./node_modules
-COPY package.json bun.lock tsconfig.json ./
+COPY package.json bun.lock tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN bun run build
 

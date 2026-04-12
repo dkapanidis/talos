@@ -17,9 +17,14 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates tini && rm -rf /var/lib/apt/lists/*
 RUN npm install -g @anthropic-ai/claude-code
 
-COPY --from=deps /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY package.json ./
+RUN groupadd --gid 1001 appuser && useradd --uid 1001 --gid 1001 --create-home appuser
+RUN chown -R appuser:appuser /app
+
+COPY --from=deps --chown=appuser:appuser /app/node_modules ./node_modules
+COPY --from=build --chown=appuser:appuser /app/dist ./dist
+COPY --chown=appuser:appuser package.json ./
+
+USER appuser
 
 EXPOSE 3000
 

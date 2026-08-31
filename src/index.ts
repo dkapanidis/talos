@@ -2,7 +2,7 @@ import { join, resolve } from "path";
 import { runAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { GitManager } from "./git.js";
-import { GitHubApp, branchNameFor } from "./github.js";
+import { GitHubApp, branchNameFor, redactTokens } from "./github.js";
 import { GitHubProgress } from "./progress.js";
 import { LinearService } from "./linear.js";
 import { createServer } from "./webhook.js";
@@ -132,10 +132,15 @@ async function handleIssue(
       console.error(`Failed to move ${issue.identifier} to In Progress:`, err);
     });
 
+    // Clone, push, and the agent's own `gh` calls all go through the App
+    // installation token where the App is installed; tokenFor falls back to
+    // config.githubToken for repos it does not cover.
+    const token = await github.tokenFor(repoMatch.slug);
     const worktreeDir = await git.createWorktree(
       repoMatch.slug,
       repoMatch.repoConfig.url,
       issue.branchName,
+      token,
     );
     console.log(`Worktree ready at ${worktreeDir}`);
 
@@ -165,6 +170,7 @@ async function handleIssue(
         process.stdout.write(`[agent:${issue.identifier}:${event.kind}] ${preview.slice(0, 200)}\n`);
       },
       abortController.signal,
+      token,
     );
 
     if (abortController.signal.aborted) {
@@ -174,6 +180,14 @@ async function handleIssue(
     }
 
     await git.cleanupWorktree(repoMatch.slug, issue.branchName);
+  } catch (err) {
+    // Without this the run dies in the logs and Linear shows nothing at all,
+    // which is indistinguishable from the agent never having been triggered.
+    console.error(`Failed to handle issue ${issueId}:`, err);
+    await notify({
+      kind: "error",
+      body: `Could not complete this request: ${redactTokens(String(err))}`,
+    }).catch(() => {});
   } finally {
     activeSessions.delete(issueId);
     if (agentSessionId) sessionAborts.delete(agentSessionId);
@@ -258,7 +272,7 @@ async function handleGitHubIssue(
     await git.cleanupWorktree(repoSlug, branchName);
   } catch (err) {
     console.error(`Failed to handle ${key}:`, err);
-    const message = `Could not complete this request: ${String(err)}`;
+    const message = `Could not complete this request: ${redactTokens(String(err))}`;
     if (progress) await progress.finish(message);
     else await github.postComment(repoSlug, issueNumber, message).catch(() => {});
   } finally {

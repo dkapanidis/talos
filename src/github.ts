@@ -270,3 +270,15 @@ export function isBotActor(login: string | undefined, type: string | undefined):
   if (type === "Bot") return true;
   return Boolean(login && login.endsWith("[bot]"));
 }
+
+/**
+ * Strip GitHub credentials out of text before it leaves the process.
+ * Errors from `git` quote the command they ran, which for a clone carries the
+ * token in the URL — so any error body posted to Linear or GitHub must pass
+ * through here first.
+ */
+export function redactTokens(text: string): string {
+  return text
+    .replace(/(https:\/\/)[^/@\s]*:[^/@\s]*@/g, "$1***@")
+    .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "$1***");
+}

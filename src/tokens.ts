@@ -8,6 +8,15 @@ export interface OAuthTokens {
 }
 
 /**
+ * A flat string->string record that survives restarts. The OAuth pair is one
+ * such record; the remembered issue->repo mappings are another.
+ */
+export interface RecordStore {
+  read(): Promise<Record<string, string> | null>;
+  write(record: Record<string, string>): Promise<void>;
+}
+
+/**
  * Somewhere to keep the OAuth pair across restarts.
  *
  * Linear rotates the refresh token on every refresh and invalidates the old
@@ -21,8 +30,8 @@ export interface TokenStore {
 }
 
 /** Discards writes. Used when no store is configured (local development). */
-export class NullTokenStore implements TokenStore {
-  async read(): Promise<OAuthTokens | null> {
+export class NullRecordStore implements RecordStore {
+  async read(): Promise<Record<string, string> | null> {
     return null;
   }
   async write(): Promise<void> {
@@ -31,21 +40,25 @@ export class NullTokenStore implements TokenStore {
 }
 
 /** Plain JSON file. Fine for a single-instance local run. */
-export class FileTokenStore implements TokenStore {
+export class FileRecordStore implements RecordStore {
   constructor(private path: string) {}
 
-  async read(): Promise<OAuthTokens | null> {
+  async read(): Promise<Record<string, string> | null> {
     try {
-      const raw = JSON.parse(readFileSync(this.path, "utf-8")) as Partial<OAuthTokens>;
-      if (!raw.accessToken || !raw.refreshToken) return null;
-      return { accessToken: raw.accessToken, refreshToken: raw.refreshToken };
+      const raw = JSON.parse(readFileSync(this.path, "utf-8")) as Record<string, unknown>;
+      if (!raw || typeof raw !== "object") return null;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (typeof v === "string") out[k] = v;
+      }
+      return out;
     } catch {
       return null;
     }
   }
 
-  async write(tokens: OAuthTokens): Promise<void> {
-    writeFileSync(this.path, JSON.stringify(tokens, null, 2), { mode: 0o600 });
+  async write(record: Record<string, string>): Promise<void> {
+    writeFileSync(this.path, JSON.stringify(record, null, 2), { mode: 0o600 });
   }
 }
 
@@ -62,7 +75,7 @@ const SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount";
  * Talks to the API server directly over https rather than pulling in a
  * Kubernetes client library, since it needs exactly two verbs.
  */
-export class KubernetesSecretTokenStore implements TokenStore {
+export class KubernetesSecretRecordStore implements RecordStore {
   private host: string;
   private port: string;
   private ca: Buffer;
@@ -88,7 +101,10 @@ export class KubernetesSecretTokenStore implements TokenStore {
   }
 
   static isInCluster(): boolean {
-    return Boolean(process.env.KUBERNETES_SERVICE_HOST) && KubernetesSecretTokenStore.currentNamespace() !== null;
+    return (
+      Boolean(process.env.KUBERNETES_SERVICE_HOST) &&
+      KubernetesSecretRecordStore.currentNamespace() !== null
+    );
   }
 
   private request(
@@ -129,24 +145,23 @@ export class KubernetesSecretTokenStore implements TokenStore {
     });
   }
 
-  async read(): Promise<OAuthTokens | null> {
+  async read(): Promise<Record<string, string> | null> {
     const res = await this.request("GET");
     if (res.status === 404) return null;
     if (res.status >= 400) {
-      throw new Error(`Failed to read token secret ${this.namespace}/${this.name}: ${res.status} ${res.body}`);
+      throw new Error(`Failed to read secret ${this.namespace}/${this.name}: ${res.status} ${res.body}`);
     }
     const secret = JSON.parse(res.body) as { data?: Record<string, string> };
-    const accessToken = decode(secret.data?.accessToken);
-    const refreshToken = decode(secret.data?.refreshToken);
-    if (!accessToken || !refreshToken) return null;
-    return { accessToken, refreshToken };
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(secret.data ?? {})) out[k] = decode(v);
+    return out;
   }
 
-  async write(tokens: OAuthTokens): Promise<void> {
-    const data = {
-      accessToken: Buffer.from(tokens.accessToken).toString("base64"),
-      refreshToken: Buffer.from(tokens.refreshToken).toString("base64"),
-    };
+  async write(record: Record<string, string>): Promise<void> {
+    const data: Record<string, string> = {};
+    for (const [k, v] of Object.entries(record)) {
+      data[k] = Buffer.from(v).toString("base64");
+    }
 
     const patch = await this.request("PATCH", { data }, "application/merge-patch+json");
     if (patch.status < 400) return;
@@ -161,12 +176,12 @@ export class KubernetesSecretTokenStore implements TokenStore {
       });
       if (create.status < 400) return;
       throw new Error(
-        `Failed to create token secret ${this.namespace}/${this.name}: ${create.status} ${create.body}`,
+        `Failed to create secret ${this.namespace}/${this.name}: ${create.status} ${create.body}`,
       );
     }
 
     throw new Error(
-      `Failed to update token secret ${this.namespace}/${this.name}: ${patch.status} ${patch.body}`,
+      `Failed to update secret ${this.namespace}/${this.name}: ${patch.status} ${patch.body}`,
     );
   }
 }
@@ -175,21 +190,60 @@ function decode(value?: string): string {
   return value ? Buffer.from(value, "base64").toString("utf-8").trim() : "";
 }
 
-export function createTokenStore(config: TokenStoreConfig): TokenStore {
+/** Adapts a RecordStore to the token pair. */
+export class RecordTokenStore implements TokenStore {
+  constructor(private store: RecordStore) {}
+
+  async read(): Promise<OAuthTokens | null> {
+    const rec = await this.store.read();
+    if (!rec?.accessToken || !rec?.refreshToken) return null;
+    return { accessToken: rec.accessToken, refreshToken: rec.refreshToken };
+  }
+
+  async write(tokens: OAuthTokens): Promise<void> {
+    await this.store.write({
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    });
+  }
+}
+
+export class NullTokenStore extends RecordTokenStore {
+  constructor() {
+    super(new NullRecordStore());
+  }
+}
+
+export class FileTokenStore extends RecordTokenStore {
+  constructor(path: string) {
+    super(new FileRecordStore(path));
+  }
+}
+
+function recordStore(config: TokenStoreConfig, path: string, secretName: string): RecordStore {
   switch (config.kind) {
     case "file":
-      return new FileTokenStore(config.path);
+      return new FileRecordStore(path);
     case "kubernetes": {
-      const namespace = config.namespace || KubernetesSecretTokenStore.currentNamespace();
+      const namespace = config.namespace || KubernetesSecretRecordStore.currentNamespace();
       if (!namespace) {
         throw new Error(
           "tokenStore.kind is 'kubernetes' but no namespace was configured and the pod's " +
             "service account namespace file is unreadable — is this running in a cluster?",
         );
       }
-      return new KubernetesSecretTokenStore(namespace, config.secretName);
+      return new KubernetesSecretRecordStore(namespace, secretName);
     }
     case "none":
-      return new NullTokenStore();
+      return new NullRecordStore();
   }
+}
+
+export function createTokenStore(config: TokenStoreConfig): TokenStore {
+  return new RecordTokenStore(recordStore(config, config.path, config.secretName));
+}
+
+/** Store for remembered team/label -> repo choices. Kept separate from the tokens. */
+export function createRepoMemoryStore(config: TokenStoreConfig): RecordStore {
+  return recordStore(config, config.repoPath, config.repoSecretName);
 }

@@ -2,7 +2,14 @@ import { describe, test, expect, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { FileTokenStore, NullTokenStore, createTokenStore } from "./tokens.js";
+import {
+  FileRecordStore,
+  FileTokenStore,
+  NullRecordStore,
+  NullTokenStore,
+  createRepoMemoryStore,
+  createTokenStore,
+} from "./tokens.js";
 
 const dirs: string[] = [];
 function tmpDir(): string {
@@ -31,6 +38,7 @@ describe("FileTokenStore", () => {
     writeFileSync(path, "not json");
     expect(await new FileTokenStore(path).read()).toBeNull();
 
+    // A half-written pair is unusable: refreshing needs both halves.
     writeFileSync(path, JSON.stringify({ accessToken: "at-only" }));
     expect(await new FileTokenStore(path).read()).toBeNull();
   });
@@ -53,21 +61,59 @@ describe("NullTokenStore", () => {
 });
 
 describe("createTokenStore", () => {
-  test("builds a file store", () => {
+  const base = { path: "", secretName: "", namespace: "", repoPath: "", repoSecretName: "" };
+
+  test("a file-backed store round-trips the token pair", async () => {
     const path = join(tmpDir(), "t.json");
-    const store = createTokenStore({ kind: "file", path, secretName: "", namespace: "" });
-    expect(store).toBeInstanceOf(FileTokenStore);
+    const store = createTokenStore({ ...base, kind: "file", path });
+    await store.write({ accessToken: "at", refreshToken: "rt" });
+    expect(await store.read()).toEqual({ accessToken: "at", refreshToken: "rt" });
   });
 
-  test("builds a null store", () => {
-    expect(
-      createTokenStore({ kind: "none", path: "", secretName: "", namespace: "" }),
-    ).toBeInstanceOf(NullTokenStore);
+  test("a 'none' store keeps nothing", async () => {
+    const store = createTokenStore({ ...base, kind: "none" });
+    await store.write({ accessToken: "at", refreshToken: "rt" });
+    expect(await store.read()).toBeNull();
   });
 
   test("refuses a kubernetes store with no namespace outside a cluster", () => {
-    expect(() =>
-      createTokenStore({ kind: "kubernetes", path: "", secretName: "s", namespace: "" }),
-    ).toThrow(/namespace/);
+    expect(() => createTokenStore({ ...base, kind: "kubernetes", secretName: "s" })).toThrow(
+      /namespace/,
+    );
+  });
+
+  test("repo memory is kept separately from the tokens", async () => {
+    const dir = tmpDir();
+    const config = {
+      ...base,
+      kind: "file" as const,
+      path: join(dir, "tokens.json"),
+      repoPath: join(dir, "repos.json"),
+    };
+    await createTokenStore(config).write({ accessToken: "at", refreshToken: "rt" });
+    await createRepoMemoryStore(config).write({ someKey: "owner/repo" });
+
+    expect(await createTokenStore(config).read()).toEqual({
+      accessToken: "at",
+      refreshToken: "rt",
+    });
+    expect(await createRepoMemoryStore(config).read()).toEqual({ someKey: "owner/repo" });
+  });
+});
+
+describe("FileRecordStore", () => {
+  test("keeps only string values", async () => {
+    const path = join(tmpDir(), "rec.json");
+    const store = new FileRecordStore(path);
+    await store.write({ a: "1", b: "2" });
+    expect(await store.read()).toEqual({ a: "1", b: "2" });
+  });
+});
+
+describe("NullRecordStore", () => {
+  test("reads back nothing after a write", async () => {
+    const store = new NullRecordStore();
+    await store.write({ a: "1" });
+    expect(await store.read()).toBeNull();
   });
 });

@@ -75,7 +75,9 @@ repos:
       - "TEAM-1"
 ```
 
-The `teamIds` field maps a Linear team key to a repo. If you only have one repo configured, it's used as the default for all issues.
+The `repos` block is entirely optional — it only carries per-repo system prompts
+and optional routing hints. See [Repository routing](#repository-routing) for how
+an issue finds its repo without it.
 
 ### 4. Set up the Linear webhook
 
@@ -112,6 +114,25 @@ Or pass a custom config path:
 node dist/index.js /path/to/config.yaml
 ```
 
+## Repository routing
+
+Nothing has to be configured for the agent to find the right repo. For each
+issue it tries, in order:
+
+1. **Explicit config** — a `repos` entry whose `teamIds`/`labels` single one out.
+2. **Links on the issue** — Linear's GitHub integration attaches branch and pull
+   request URLs, which name the repo outright. Descriptions and comments are
+   scanned too.
+3. **What you chose last time** — answers are remembered per team + label
+   combination, so the same kind of issue routes itself from then on.
+4. **Asking** — an elicitation listing every non-archived repo the GitHub token
+   can see. The answer is remembered, so each team + label combination is only
+   ever asked about once.
+
+Reply to the question with either the full slug (`harbur/ray-app`) or just the
+repo name (`ray-app`). Remembered answers live in the `tokenStore`, so set one
+up if you want them to survive a restart.
+
 ## How It Works
 
 1. You assign a Linear issue to your bot user
@@ -140,7 +161,8 @@ Each issue runs in its own worktree, so multiple issues can be worked on in para
 | `systemPrompt` | — | Global system prompt for Claude Code |
 | `repos.<slug>.url` | — | Git clone URL |
 | `repos.<slug>.systemPrompt` | — | Repo-specific system prompt |
-| `repos.<slug>.teamIds` | — | Linear team keys that map to this repo |
+| `repos.<slug>.teamIds` | — | Optional: Linear team keys that map to this repo |
+| `repos.<slug>.labels` | — | Optional: issue labels that map to this repo |
 
 ## Local Development
 

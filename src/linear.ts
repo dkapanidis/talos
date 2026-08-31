@@ -3,7 +3,8 @@ import { join } from "path";
 import { LinearClient } from "@linear/sdk";
 import type { IssueContext } from "./agent.js";
 import type { Config, RepoConfig } from "./config.js";
-import { createTokenStore, type TokenStore } from "./tokens.js";
+import { createRepoMemoryStore, createTokenStore, type TokenStore } from "./tokens.js";
+import { RepoDiscovery, RepoMemory, extractRepoSlugs, memoryKey } from "./repos.js";
 
 export function safeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
@@ -37,6 +38,8 @@ export class LinearService {
   private accessToken: string;
   private refreshToken: string;
   private store: TokenStore;
+  private repoMemory: RepoMemory;
+  private repoDiscovery: RepoDiscovery;
   /** De-duplicates concurrent refreshes so parallel issues share one token swap. */
   private refreshing: Promise<void> | null = null;
 
@@ -45,6 +48,8 @@ export class LinearService {
     this.accessToken = config.linearAccessToken;
     this.refreshToken = config.linearRefreshToken;
     this.store = store;
+    this.repoMemory = new RepoMemory(createRepoMemoryStore(config.tokenStore));
+    this.repoDiscovery = new RepoDiscovery(config.githubToken);
     this.client = this.accessToken
       ? new LinearClient({ accessToken: this.accessToken })
       : new LinearClient({ apiKey: config.linearApiKey });
@@ -215,69 +220,124 @@ export class LinearService {
     return results;
   }
 
+  /** Config for a slug, synthesising the clone URL when it is not configured. */
+  private repoConfigFor(slug: string): RepoConfig {
+    const configured = this.config.repos[slug];
+    return {
+      ...configured,
+      url: configured?.url || `https://github.com/${slug}`,
+    };
+  }
+
   /**
-   * Find which repo config matches this issue.
+   * Work out which repo an issue belongs to, preferring evidence over config:
    *
-   * 1. Filter to repos whose `teamIds` include the issue's team key. Repos
-   *    without `teamIds` are treated as applicable to any team and are
-   *    included in this scope.
-   * 2. Within that team scope, narrow to repos that have at least one
-   *    matching label. If none match, keep the full team scope.
-   * 3. If the resulting set has exactly one repo, return it. If it has
-   *    several, return them as `candidates` for elicitation. If it's empty,
-   *    fall back to the single configured repo or `null`.
+   * 1. An explicit `repos` entry whose teamIds/labels single one out.
+   * 2. A GitHub repo linked from the issue — Linear's integration attaches the
+   *    branch and PR URLs, which name the repo outright.
+   * 3. A remembered answer for this team+label combination.
+   * 4. Otherwise ask, offering every repo the GitHub token can see. The answer
+   *    is remembered, so a given team+label is only ever asked about once.
    */
   async resolveRepo(
     issueId: string,
   ): Promise<
     | { slug: string; repoConfig: RepoConfig }
-    | { candidates: Array<{ slug: string; repoConfig: RepoConfig }> }
+    | { candidates: Array<{ slug: string; repoConfig: RepoConfig }>; memoryKey: string }
     | null
   > {
-    const { team, labelNames } = await this.withAuth(async (client) => {
-    const issue = await client.issue(issueId);
-    const team = await issue.team;
-    const labels = (await issue.labels()).nodes;
-    const labelNames = new Set<string>();
-    for (const label of labels) {
-      const name = label.name.toLowerCase();
-      labelNames.add(name);
-      const parent = await label.parent;
-      if (parent?.name) {
-        const parentName = parent.name.toLowerCase();
-        labelNames.add(`${parentName}:${name}`);
-        labelNames.add(`${parentName}/${name}`);
+    const { team, labelNames, issueLabels, texts } = await this.withAuth(async (client) => {
+      const issue = await client.issue(issueId);
+      const team = await issue.team;
+      const labels = (await issue.labels()).nodes;
+      const labelNames = new Set<string>();
+      const issueLabels: string[] = [];
+      for (const label of labels) {
+        const name = label.name.toLowerCase();
+        labelNames.add(name);
+        issueLabels.push(name);
+        const parent = await label.parent;
+        if (parent?.name) {
+          const parentName = parent.name.toLowerCase();
+          labelNames.add(`${parentName}:${name}`);
+          labelNames.add(`${parentName}/${name}`);
+        }
       }
-    }
-    return { team, labelNames };
+
+      const comments = await issue.comments();
+      const attachments = await issue.attachments();
+      const texts = [
+        issue.description ?? "",
+        ...comments.nodes.map((c) => c.body ?? ""),
+        ...attachments.nodes.map((a) => `${a.url ?? ""} ${a.title ?? ""}`),
+      ];
+
+      return { team, labelNames, issueLabels, texts };
     });
 
+    // 1. Explicit configuration still wins when it is unambiguous.
     const entries = Object.entries(this.config.repos);
-
     const teamScope = team
       ? entries.filter(([, cfg]) => !cfg.teamIds?.length || cfg.teamIds.includes(team.key))
       : entries;
-
     const labelScope = teamScope.filter(([, cfg]) =>
       (cfg.labels ?? []).some((l) => labelNames.has(l.toLowerCase())),
     );
-
-    const finalScope = labelScope.length > 0 ? labelScope : teamScope;
-
-    if (finalScope.length === 1) {
-      const [slug, repoConfig] = finalScope[0];
-      return { slug, repoConfig };
+    if (labelScope.length === 1) {
+      const [slug] = labelScope[0];
+      return { slug, repoConfig: this.repoConfigFor(slug) };
     }
-    if (finalScope.length > 1) {
-      return { candidates: finalScope.map(([slug, repoConfig]) => ({ slug, repoConfig })) };
-    }
-
-    if (entries.length === 1) {
-      const [slug, repoConfig] = entries[0];
-      return { slug, repoConfig };
+    const configuredScope = labelScope.length > 0 ? labelScope : teamScope;
+    if (configuredScope.length === 1) {
+      const [slug] = configuredScope[0];
+      return { slug, repoConfig: this.repoConfigFor(slug) };
     }
 
-    return null;
+    // 2. A repo linked from the issue itself is the strongest evidence there is.
+    const linked = extractRepoSlugs(texts.join("\n"));
+    if (linked.length === 1) {
+      console.log(`Inferred repo ${linked[0]} from links on the issue`);
+      return { slug: linked[0], repoConfig: this.repoConfigFor(linked[0]) };
+    }
+
+    const key = memoryKey(team?.key, issueLabels);
+
+    // 3. Whatever was chosen last time for this team+label combination.
+    const remembered = await this.repoMemory.get(key);
+    if (remembered) {
+      console.log(`Using remembered repo ${remembered} for ${key}`);
+      return { slug: remembered, repoConfig: this.repoConfigFor(remembered) };
+    }
+
+    // 4. Ask. Prefer a narrowed-down set over the full listing.
+    let choices: string[];
+    if (linked.length > 1) {
+      choices = linked;
+    } else if (configuredScope.length > 1) {
+      choices = configuredScope.map(([slug]) => slug);
+    } else {
+      choices = await this.repoDiscovery.list().catch((err) => {
+        console.error("Failed to list repos from GitHub:", err);
+        return [];
+      });
+    }
+
+    if (choices.length === 1) {
+      return { slug: choices[0], repoConfig: this.repoConfigFor(choices[0]) };
+    }
+    if (choices.length === 0) return null;
+
+    return {
+      candidates: choices.map((slug) => ({ slug, repoConfig: this.repoConfigFor(slug) })),
+      memoryKey: key,
+    };
+  }
+
+  /** Record the repo chosen for a team+label combination so it is not asked again. */
+  async rememberRepo(key: string, slug: string): Promise<void> {
+    await this.repoMemory.set(key, slug).catch((err) => {
+      console.error("Failed to persist repo choice:", err);
+    });
   }
 
   /** Post an elicitation activity asking the user to pick a repository. */

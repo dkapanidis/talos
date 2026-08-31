@@ -15,8 +15,12 @@ export interface TokenStoreConfig {
   kind: TokenStoreKind;
   /** File path, when kind is "file". */
   path: string;
-  /** Secret name, when kind is "kubernetes". */
+  /** Secret name for the OAuth pair, when kind is "kubernetes". */
   secretName: string;
+  /** File path for remembered repo choices, when kind is "file". */
+  repoPath: string;
+  /** Secret name for remembered repo choices, when kind is "kubernetes". */
+  repoSecretName: string;
   /** Namespace, when kind is "kubernetes". Defaults to the pod's own namespace. */
   namespace: string;
 }
@@ -76,6 +80,8 @@ function loadTokenStoreConfig(raw?: Record<string, unknown>): TokenStoreConfig {
     kind,
     path: (raw?.path as string) || "./.talos-tokens.json",
     secretName: (raw?.secretName as string) || "talos-oauth-tokens",
+    repoPath: (raw?.repoPath as string) || "./.talos-repos.json",
+    repoSecretName: (raw?.repoSecretName as string) || "talos-repo-memory",
     namespace: (raw?.namespace as string) || process.env.POD_NAMESPACE || "",
   };
 }

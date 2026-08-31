@@ -20,7 +20,7 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     workDir: "./work",
     systemPrompt: "",
     repos: {},
-    tokenStore: { kind: "none", path: "", secretName: "", namespace: "" },
+    tokenStore: { kind: "none", path: "", secretName: "", namespace: "", repoPath: "", repoSecretName: "" },
     ...overrides,
   };
 }

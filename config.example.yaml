@@ -37,7 +37,7 @@ botMentionName: "jarvis"
 # Base directory for cloning repos and creating worktrees
 workDir: "./work"
 
-# Where to persist refreshed OAuth tokens.
+# Durable state: refreshed OAuth tokens, and remembered repo choices.
 #
 # Linear access tokens expire after 24 hours, so the agent refreshes them on
 # demand — and Linear rotates the refresh token each time, invalidating the
@@ -52,6 +52,8 @@ tokenStore:
   kind: "none"
   path: "./.talos-tokens.json"
   secretName: "talos-oauth-tokens"
+  repoPath: "./.talos-repos.json"
+  repoSecretName: "talos-repo-memory"
   # namespace: defaults to the pod's own namespace
 
 # Global system prompt applied to all repos
@@ -64,7 +66,10 @@ systemPrompt: |
   - Commit your changes and push to a new branch.
   - Create a PR with a clear description.
 
-# Per-repo configuration
+# Per-repo configuration. OPTIONAL — the agent infers the repo from links on the
+# issue, remembers what you picked last time, and asks when it still cannot tell.
+# Entries here add a per-repo system prompt, and can pin routing if you want it
+# deterministic rather than inferred.
 repos:
   owner/repo-name:
     url: "https://github.com/owner/repo-name"
@@ -73,7 +78,7 @@ repos:
       - Always push on branches matching the Linear git branch naming convention.
       - Run `npm test` before committing.
       - Use conventional commits (feat:, fix:, chore:).
-    # Optional: specific Linear team IDs that map to this repo
+    # Optional: pin this repo to specific Linear team keys
     teamIds:
       - "TEAM-1"
     # Optional: issue labels that route an issue to this repo (case-insensitive).

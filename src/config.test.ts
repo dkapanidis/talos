@@ -131,6 +131,8 @@ tokenStore:
       kind: "kubernetes",
       path: "./.talos-tokens.json",
       secretName: "talos-oauth-tokens",
+      repoPath: "./.talos-repos.json",
+      repoSecretName: "talos-repo-memory",
       namespace: "talos",
     });
   });

@@ -18,8 +18,9 @@ const git = new GitManager(resolve(config.workDir), config.githubToken);
 const activeSessions = new Set<string>();
 // Abort controllers keyed by agent session id for cancel requests
 const sessionAborts = new Map<string, AbortController>();
-// Issues awaiting a repo selection from the user (issueId -> candidate slugs)
-const pendingRepoSelection = new Map<string, string[]>();
+// Issues awaiting a repo selection from the user.
+// The memory key travels with the candidates so the answer can be remembered.
+const pendingRepoSelection = new Map<string, { slugs: string[]; memoryKey: string }>();
 
 function cancelSession(agentSessionId: string): void {
   const ctrl = sessionAborts.get(agentSessionId);
@@ -79,10 +80,18 @@ async function handleIssue(
     // If the user is replying to a pending repo-selection elicitation, try to match.
     const pending = pendingRepoSelection.get(issueId);
     if (pending && userPrompt) {
-      const pick = pending.find((slug) => userPrompt.toLowerCase().includes(slug.toLowerCase()));
-      if (pick && config.repos[pick]) {
-        resolved = { slug: pick, repoConfig: config.repos[pick] };
+      const prompt = userPrompt.toLowerCase();
+      // Match the full slug, or just the repo half of it ("ray-app").
+      const pick =
+        pending.slugs.find((slug) => prompt.includes(slug.toLowerCase())) ??
+        pending.slugs.find((slug) => prompt.includes(slug.split("/")[1].toLowerCase()));
+      if (pick) {
+        resolved = {
+          slug: pick,
+          repoConfig: config.repos[pick] ?? { url: `https://github.com/${pick}` },
+        };
         pendingRepoSelection.delete(issueId);
+        await linear.rememberRepo(pending.memoryKey, pick);
       }
     }
 
@@ -95,7 +104,7 @@ async function handleIssue(
       }
       if ("candidates" in repoMatch) {
         const slugs = repoMatch.candidates.map((c) => c.slug);
-        pendingRepoSelection.set(issueId, slugs);
+        pendingRepoSelection.set(issueId, { slugs, memoryKey: repoMatch.memoryKey });
         if (agentSessionId) {
           await linear
             .postRepoSelection(agentSessionId, repoMatch.candidates)

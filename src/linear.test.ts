@@ -95,7 +95,7 @@ describe("LinearService token refresh", () => {
     workDir: "./work",
     systemPrompt: "",
     repos: {},
-    tokenStore: { kind: "none" as const, path: "", secretName: "", namespace: "" },
+    tokenStore: { kind: "none" as const, path: "", secretName: "", namespace: "", repoPath: "", repoSecretName: "" },
   };
 
   function memoryStore() {

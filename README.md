@@ -214,6 +214,32 @@ up if you want them to survive a restart.
 
 Each issue runs in its own worktree, so multiple issues can be worked on in parallel without conflicts.
 
+### The work directory
+
+`workDir` holds two things:
+
+```
+work/repos/<owner>-<repo>      one cached clone per repository
+work/worktrees/<owner>-<repo>-<branch>   one worktree per issue
+```
+
+The clones are a **cache** and are meant to outlive the process — in Kubernetes
+they sit on a PersistentVolume mounted at `/app/work`, so a cold clone is paid
+once rather than on every task. Everything that follows from that:
+
+- **Every run fetches before it works.** A new branch is cut from
+  `origin/<default>` and an existing one is reset to its own remote branch, so a
+  cached clone never bases work on a stale commit.
+- **The remote URL is rewritten on every run.** Git stores the credential in the
+  remote URL at clone time, and a GitHub App installation token expires after an
+  hour, so a cache older than that would otherwise fetch with a dead token.
+- **Worktrees are disposable.** One is removed and re-created rather than
+  reused: committed work lives on the branch, and uncommitted leftovers from a
+  crashed run must not leak into the next one. Cleanup runs on the failure path
+  too, or a failed run would leak a worktree onto the volume permanently.
+
+The cache is safe to delete at any point; the next run re-clones.
+
 ## Configuration Reference
 
 | Field | Env Var | Description |

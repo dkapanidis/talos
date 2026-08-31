@@ -49,6 +49,11 @@ async function handleIssue(
   const abortController = new AbortController();
   if (agentSessionId) sessionAborts.set(agentSessionId, abortController);
 
+  // Set once the worktree exists. The work directory is a persistent volume
+  // now, so a worktree not dropped on the failure path leaks disk until the
+  // next run on the same branch — cleanup belongs in the finally.
+  let cleanup: (() => Promise<void>) | undefined;
+
   const notify = async (event: {
     kind: "thought" | "action" | "response" | "error";
     body?: string;
@@ -142,6 +147,7 @@ async function handleIssue(
       issue.branchName,
       token,
     );
+    cleanup = () => git.cleanupWorktree(repoMatch.slug, issue.branchName);
     console.log(`Worktree ready at ${worktreeDir}`);
 
     issue.attachments = await linear
@@ -179,7 +185,6 @@ async function handleIssue(
       await notify({ kind: "error", body: "Agent finished with errors. Manual review needed." });
     }
 
-    await git.cleanupWorktree(repoMatch.slug, issue.branchName);
   } catch (err) {
     // Without this the run dies in the logs and Linear shows nothing at all,
     // which is indistinguishable from the agent never having been triggered.
@@ -189,6 +194,7 @@ async function handleIssue(
       body: `Could not complete this request: ${redactTokens(String(err))}`,
     }).catch(() => {});
   } finally {
+    await cleanup?.().catch((err) => console.error("Failed to clean up worktree:", err));
     activeSessions.delete(issueId);
     if (agentSessionId) sessionAborts.delete(agentSessionId);
   }
@@ -221,6 +227,7 @@ async function handleGitHubIssue(
   }
 
   let progress: GitHubProgress | undefined;
+  let cleanup: (() => Promise<void>) | undefined;
 
   try {
     const issue = await github.getIssue(repoSlug, issueNumber);
@@ -236,6 +243,7 @@ async function handleGitHubIssue(
       branchName,
       token,
     );
+    cleanup = () => git.cleanupWorktree(repoSlug, branchName);
     console.log(`Worktree ready at ${worktreeDir}`);
 
     const result = await runAgent(
@@ -268,14 +276,13 @@ async function handleGitHubIssue(
       ? result.output.trim() || "Done."
       : "Agent finished with errors. Manual review needed.";
     await progress.finish(body);
-
-    await git.cleanupWorktree(repoSlug, branchName);
   } catch (err) {
     console.error(`Failed to handle ${key}:`, err);
     const message = `Could not complete this request: ${redactTokens(String(err))}`;
     if (progress) await progress.finish(message);
     else await github.postComment(repoSlug, issueNumber, message).catch(() => {});
   } finally {
+    await cleanup?.().catch((e) => console.error("Failed to clean up worktree:", e));
     activeSessions.delete(key);
   }
 }

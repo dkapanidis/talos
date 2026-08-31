@@ -50,6 +50,8 @@ export type GitHubIssueHandler = (
   repoSlug: string,
   issueNumber: number,
   userPrompt?: string,
+  /** The comment that triggered this run, so it can be acknowledged. */
+  triggerCommentId?: number,
 ) => Promise<void>;
 
 interface GitHubWebhookPayload {
@@ -58,7 +60,7 @@ interface GitHubWebhookPayload {
   sender?: { login?: string; type?: string };
   issue?: { number?: number; pull_request?: unknown };
   pull_request?: { number?: number };
-  comment?: { body?: string; user?: { login?: string; type?: string } };
+  comment?: { id?: number; body?: string; user?: { login?: string; type?: string } };
   label?: { name?: string };
 }
 
@@ -236,7 +238,7 @@ export function createServer(
       const number = payload.issue?.number ?? payload.pull_request?.number;
       if (number && triggersAgent(body, config.github.mentionName, config.github.commandName)) {
         app.log.info(`Triggered on ${slug}#${number}, starting agent...`);
-        onGitHubIssue(slug, number, body).catch((err) => {
+        onGitHubIssue(slug, number, body, payload.comment?.id).catch((err) => {
           app.log.error(err, `Failed to handle ${slug}#${number}`);
         });
       }

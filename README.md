@@ -240,6 +240,28 @@ once rather than on every task. Everything that follows from that:
 
 The cache is safe to delete at any point; the next run re-clones.
 
+### Interruption and restarts
+
+Linear ends an agent session on a **terminal activity** — a `response` or an
+`error`. `thought` and `action` keep it working. A session that never receives
+one is not marked complete or failed: it sits in a working state until Linear
+marks it **stale**. So every run has to be closed out, including the ones the
+process does not finish.
+
+On `SIGTERM` (a deploy, a rollout, a node drain) talos stops accepting
+webhooks, aborts the runs in flight, and waits up to 20s for them to post their
+own terminal activity, then reports for anything that did not. The window sits
+inside the default 30s `terminationGracePeriodSeconds`; it is not enough for a
+run to *finish* — those take minutes — only for it to report.
+
+A `SIGKILL` — an OOM, or a grace period that ran out — gets no chance to
+report. For that, open runs are recorded in `<workDir>/.talos-sessions.json`,
+on the volume that outlives the pod. The next process reads it at startup,
+closes out whatever its predecessor left open, and clears the record.
+
+Work the agent committed and pushed survives on the branch either way, and
+mentioning `@talos` again picks it up from there. Unpushed work is lost.
+
 ## Configuration Reference
 
 | Field | Env Var | Description |

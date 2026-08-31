@@ -5,6 +5,8 @@ import { GitManager } from "./git.js";
 import { GitHubApp, branchNameFor, redactTokens } from "./github.js";
 import { GitHubProgress } from "./progress.js";
 import { LinearService } from "./linear.js";
+import { SessionRegistry, INTERRUPTED_MESSAGE } from "./sessions.js";
+import { FileRecordStore } from "./tokens.js";
 import { createServer } from "./webhook.js";
 
 const configPath = process.argv[2] || "config.yaml";
@@ -16,6 +18,10 @@ const linear = new LinearService(config);
 await linear.init();
 const git = new GitManager(resolve(config.workDir), config.githubToken);
 const github = new GitHubApp(config.github, config.githubToken);
+// Kept in the work directory, which is the volume that survives a restart.
+const sessions = new SessionRegistry(
+  new FileRecordStore(join(resolve(config.workDir), ".talos-sessions.json")),
+);
 
 // Track active sessions to avoid duplicate runs
 const activeSessions = new Set<string>();
@@ -24,6 +30,10 @@ const sessionAborts = new Map<string, AbortController>();
 // Issues awaiting a repo selection from the user.
 // The memory key travels with the candidates so the answer can be remembered.
 const pendingRepoSelection = new Map<string, { slugs: string[]; memoryKey: string }>();
+// In-flight runs, so a shutdown can wait for them to report before exiting.
+const inFlight = new Map<string, Promise<void>>();
+// Distinguishes a stop the user asked for from one a restart forced.
+let shuttingDown = false;
 
 function cancelSession(agentSessionId: string): void {
   const ctrl = sessionAborts.get(agentSessionId);
@@ -133,6 +143,15 @@ async function handleIssue(
     const issue = await linear.getIssueContext(issueId);
     console.log(`Working on ${issue.identifier}: ${issue.title}`);
 
+    // From here the run owns a Linear session that has to be closed out, even
+    // if this process does not survive to do it.
+    await sessions.begin({
+      issueId,
+      agentSessionId,
+      identifier: issue.identifier,
+      startedAt: new Date().toISOString(),
+    });
+
     await linear.moveToInProgress(issueId).catch((err) => {
       console.error(`Failed to move ${issue.identifier} to In Progress:`, err);
     });
@@ -180,7 +199,11 @@ async function handleIssue(
     );
 
     if (abortController.signal.aborted) {
-      await notify({ kind: "response", body: "Agent stopped at user request." });
+      await notify(
+        shuttingDown
+          ? { kind: "error", body: INTERRUPTED_MESSAGE }
+          : { kind: "response", body: "Agent stopped at user request." },
+      );
     } else if (!result.success) {
       await notify({ kind: "error", body: "Agent finished with errors. Manual review needed." });
     }
@@ -195,6 +218,7 @@ async function handleIssue(
     }).catch(() => {});
   } finally {
     await cleanup?.().catch((err) => console.error("Failed to clean up worktree:", err));
+    await sessions.end(issueId, agentSessionId);
     activeSessions.delete(issueId);
     if (agentSessionId) sessionAborts.delete(agentSessionId);
   }
@@ -287,8 +311,36 @@ async function handleGitHubIssue(
   }
 }
 
+/** Runs a handler while keeping its promise, so a shutdown can wait on it. */
+function tracked<A extends unknown[]>(
+  key: string,
+  handler: (...args: A) => Promise<void>,
+  ...args: A
+): Promise<void> {
+  const run = handler(...args).finally(() => inFlight.delete(key));
+  inFlight.set(key, run);
+  return run;
+}
+
+// Close out anything a previous process was working on when it died. A SIGKILL
+// — an OOM, or a grace period that ran out — leaves the Linear session with no
+// terminal activity, and it sits in a working state until Linear marks it
+// stale. This is the only path that covers that case.
+const orphans = await sessions.takeOrphans();
+if (orphans.length) {
+  console.log(`Closing out ${orphans.length} session(s) left open by a previous run`);
+  await sessions.closeOut(orphans, linear);
+}
+
 // Start the server
-const app = createServer(config, handleIssue, cancelSession, handleGitHubIssue);
+const app = createServer(
+  config,
+  (issueId, agentSessionId, userPrompt) =>
+    tracked(issueId, handleIssue, issueId, agentSessionId, userPrompt),
+  cancelSession,
+  (slug, number, prompt, commentId) =>
+    tracked(`${slug}#${number}`, handleGitHubIssue, slug, number, prompt, commentId),
+);
 
 app.listen({ port: config.server.port, host: config.server.host }, (err) => {
   if (err) {
@@ -298,10 +350,42 @@ app.listen({ port: config.server.port, host: config.server.host }, (err) => {
   console.log(`Linear agent listening on ${config.server.host}:${config.server.port}`);
 });
 
+/**
+ * How long to let interrupted runs report before exiting.
+ *
+ * Kubernetes SIGKILLs at terminationGracePeriodSeconds, 30s by default, so this
+ * has to leave room. It is not enough for a run to finish — those take minutes
+ * — only for the aborted handlers to unwind and post their terminal activity,
+ * which is a couple of API calls.
+ */
+const DRAIN_MS = 20_000;
+
 const shutdown = async (signal: string) => {
   console.log(`Received ${signal}, shutting down…`);
+  shuttingDown = true;
+
+  // Stop taking new work before stopping the work in progress.
+  await app.close().catch((err) => console.error("Failed to close the server:", err));
   for (const [id] of sessionAborts) cancelSession(id);
-  await app.close();
+
+  // Gated on in-flight runs rather than Linear sessions, so a GitHub-triggered
+  // run gets the same window to finish writing its status comment.
+  if (inFlight.size) {
+    console.log(`Waiting up to ${DRAIN_MS / 1000}s for ${inFlight.size} run(s) to report…`);
+    await Promise.race([
+      Promise.allSettled([...inFlight.values()]),
+      new Promise((resolve) => setTimeout(resolve, DRAIN_MS).unref()),
+    ]);
+  }
+
+  // Whatever did not manage to report for itself. Without this the session is
+  // left with no terminal activity and goes stale rather than failed.
+  const stranded = sessions.list();
+  if (stranded.length) {
+    console.log(`Closing out ${stranded.length} run(s) that did not report in time`);
+    await sessions.closeOut(stranded, linear);
+  }
+
   process.exit(0);
 };
 

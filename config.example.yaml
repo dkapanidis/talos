@@ -37,6 +37,23 @@ botMentionName: "jarvis"
 # Base directory for cloning repos and creating worktrees
 workDir: "./work"
 
+# Where to persist refreshed OAuth tokens.
+#
+# Linear access tokens expire after 24 hours, so the agent refreshes them on
+# demand — and Linear rotates the refresh token each time, invalidating the
+# previous one. If the new pair is not written somewhere durable, the values
+# below go stale and the next restart cannot authenticate at all.
+#
+#   none        in-memory only (default; fine for a short local run)
+#   file        JSON file at `path`
+#   kubernetes  a Secret named `secretName` in the pod's namespace, which the
+#               agent creates on first write (needs get/create/patch on secrets)
+tokenStore:
+  kind: "none"
+  path: "./.talos-tokens.json"
+  secretName: "talos-oauth-tokens"
+  # namespace: defaults to the pod's own namespace
+
 # Global system prompt applied to all repos
 systemPrompt: |
   You are an autonomous coding agent. You have been assigned a Linear issue to work on.

@@ -84,6 +84,21 @@ The `teamIds` field maps a Linear team key to a repo. If you only have one repo 
 3. Select **Issue** events (create, update)
 4. Copy the signing secret into `config.yaml` as `linearWebhookSecret`
 
+Every request to `/webhook` must carry a `linear-signature` header matching an
+HMAC-SHA256 of the raw request body under that secret; unsigned and
+wrongly-signed requests are rejected with a 401. The endpoint starts agent runs
+with real credentials, so leaving `linearWebhookSecret` empty — which disables
+verification — is only safe when the port is not reachable from the internet.
+
+### OAuth token lifetime
+
+Linear's OAuth access tokens expire after **24 hours**. The agent refreshes
+automatically when a call comes back 401, but Linear rotates the refresh token
+on every exchange and invalidates the old one. Set `tokenStore` to `file` or
+`kubernetes` for any long-running deployment: without it the refreshed pair
+lives only in memory, and the next restart falls back to the now-invalid tokens
+in `config.yaml`, which can only be fixed by re-running the OAuth install flow.
+
 ### 5. Run
 
 ```bash
@@ -118,6 +133,10 @@ Each issue runs in its own worktree, so multiple issues can be worked on in para
 | `githubToken` | `GH_TOKEN` | GitHub token for cloning and pushing |
 | `botUserId` | — | Linear user ID of the bot account |
 | `workDir` | — | Directory for clones and worktrees (default: `./work`) |
+| `tokenStore.kind` | `TOKEN_STORE_KIND` | Where refreshed OAuth tokens persist: `none`, `file`, or `kubernetes` |
+| `tokenStore.path` | — | JSON file path when kind is `file` |
+| `tokenStore.secretName` | — | Secret name when kind is `kubernetes` (default: `talos-oauth-tokens`) |
+| `tokenStore.namespace` | `POD_NAMESPACE` | Namespace when kind is `kubernetes` (default: the pod's own) |
 | `systemPrompt` | — | Global system prompt for Claude Code |
 | `repos.<slug>.url` | — | Git clone URL |
 | `repos.<slug>.systemPrompt` | — | Repo-specific system prompt |

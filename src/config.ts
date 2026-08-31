@@ -9,6 +9,18 @@ export interface RepoConfig {
   labels?: string[];
 }
 
+export type TokenStoreKind = "none" | "file" | "kubernetes";
+
+export interface TokenStoreConfig {
+  kind: TokenStoreKind;
+  /** File path, when kind is "file". */
+  path: string;
+  /** Secret name, when kind is "kubernetes". */
+  secretName: string;
+  /** Namespace, when kind is "kubernetes". Defaults to the pod's own namespace. */
+  namespace: string;
+}
+
 export interface Config {
   linearApiKey: string;
   linearAccessToken: string;
@@ -23,6 +35,7 @@ export interface Config {
   workDir: string;
   systemPrompt: string;
   repos: Record<string, RepoConfig>;
+  tokenStore: TokenStoreConfig;
 }
 
 export function loadConfig(path: string): Config {
@@ -45,5 +58,24 @@ export function loadConfig(path: string): Config {
     workDir: (raw.workDir as string) || "./work",
     systemPrompt: (raw.systemPrompt as string) || "",
     repos: (raw.repos as Record<string, RepoConfig>) || {},
+    tokenStore: loadTokenStoreConfig(raw.tokenStore as Record<string, unknown> | undefined),
+  };
+}
+
+/**
+ * Where refreshed OAuth tokens are persisted. Defaults to "none" (in-memory
+ * only), which is fine for a local run but means a restart falls back to the
+ * tokens in config.yaml — see TokenStore for why that goes stale.
+ */
+function loadTokenStoreConfig(raw?: Record<string, unknown>): TokenStoreConfig {
+  const kind = ((raw?.kind as string) || process.env.TOKEN_STORE_KIND || "none") as TokenStoreKind;
+  if (!["none", "file", "kubernetes"].includes(kind)) {
+    throw new Error(`Invalid tokenStore.kind "${kind}": expected none, file, or kubernetes`);
+  }
+  return {
+    kind,
+    path: (raw?.path as string) || "./.talos-tokens.json",
+    secretName: (raw?.secretName as string) || "talos-oauth-tokens",
+    namespace: (raw?.namespace as string) || process.env.POD_NAMESPACE || "",
   };
 }

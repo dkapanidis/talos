@@ -15,6 +15,7 @@ interface IssueContext {
 
 interface AgentResult {
   success: boolean;
+  /** The agent's closing summary — not the raw stream it arrived in. */
   output: string;
 }
 
@@ -120,7 +121,14 @@ export function runAgent(
       resolve({ success: false, output: "" });
       return;
     }
-    const chunks: string[] = [];
+    // The agent's closing summary, taken from the stream's `result` message.
+    // Retaining the whole of stdout instead would grow without bound: under
+    // --output-format stream-json --verbose every tool result comes through it,
+    // including the full contents of every file the agent reads. A long run on
+    // a large repo can put gigabytes through here, and the container also has
+    // to hold the agent's own child processes — test runners, builds, nested
+    // subagents — inside one memory limit.
+    let finalResult = "";
     let buffer = "";
 
     const emit = (event: AgentEvent) => {
@@ -156,6 +164,7 @@ export function runAgent(
         if (msg.is_error) {
           emit({ kind: "error", body: typeof msg.result === "string" ? msg.result : "Agent errored" });
         } else if (typeof msg.result === "string" && msg.result.trim()) {
+          finalResult = msg.result;
           emit({ kind: "response", body: msg.result });
         }
       }
@@ -208,7 +217,6 @@ export function runAgent(
 
     proc.stdout.on("data", (data: Buffer) => {
       const text = data.toString();
-      chunks.push(text);
       buffer += text;
       let idx: number;
       while ((idx = buffer.indexOf("\n")) !== -1) {
@@ -227,7 +235,7 @@ export function runAgent(
       if (buffer.trim()) handleLine(buffer);
       resolve({
         success: code === 0,
-        output: chunks.join(""),
+        output: finalResult,
       });
     });
   });

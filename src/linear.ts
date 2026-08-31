@@ -3,6 +3,7 @@ import { join } from "path";
 import { LinearClient } from "@linear/sdk";
 import type { IssueContext } from "./agent.js";
 import type { Config, RepoConfig } from "./config.js";
+import { createTokenStore, type TokenStore } from "./tokens.js";
 
 export function safeFilename(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80);
@@ -21,23 +22,82 @@ export function extensionFromUrlOrType(url: string, contentType?: string | null)
   return "bin";
 }
 
+/** True for the Linear SDK / GraphQL shapes that mean "your token is no good". */
+export function isAuthError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { status?: number; type?: string; errors?: Array<{ type?: string }> };
+  if (e.status === 401) return true;
+  if (e.type === "AuthenticationLinearError") return true;
+  return (e.errors ?? []).some((inner) => inner?.type === "AuthenticationError");
+}
+
 export class LinearService {
   private client: LinearClient;
   private config: Config;
   private accessToken: string;
   private refreshToken: string;
+  private store: TokenStore;
+  /** De-duplicates concurrent refreshes so parallel issues share one token swap. */
+  private refreshing: Promise<void> | null = null;
 
-  constructor(config: Config) {
+  constructor(config: Config, store: TokenStore = createTokenStore(config.tokenStore)) {
     this.config = config;
     this.accessToken = config.linearAccessToken;
     this.refreshToken = config.linearRefreshToken;
+    this.store = store;
     this.client = this.accessToken
       ? new LinearClient({ accessToken: this.accessToken })
       : new LinearClient({ apiKey: config.linearApiKey });
   }
 
+  /**
+   * Adopt persisted tokens, if any. They are newer than config.yaml by
+   * definition: the only writer is our own refresh path.
+   */
+  async init(): Promise<void> {
+    if (!this.config.linearAccessToken) return;
+    const stored = await this.store.read().catch((err) => {
+      console.error("Failed to read persisted Linear tokens:", err);
+      return null;
+    });
+    if (!stored) return;
+    this.accessToken = stored.accessToken;
+    this.refreshToken = stored.refreshToken;
+    this.client = new LinearClient({ accessToken: this.accessToken });
+    console.log("Loaded Linear OAuth tokens from the token store");
+  }
+
+  /**
+   * Run a Linear call, and on an auth failure refresh the token once and retry.
+   *
+   * Linear OAuth access tokens last 24 hours, so without this every install
+   * breaks a day after it is set up.
+   */
+  private async withAuth<T>(fn: (client: LinearClient) => Promise<T>): Promise<T> {
+    try {
+      return await fn(this.client);
+    } catch (err) {
+      if (!isAuthError(err) || !this.canRefresh()) throw err;
+      console.log("Linear rejected the access token, refreshing…");
+      await this.refreshAccessToken();
+      return await fn(this.client);
+    }
+  }
+
+  private canRefresh(): boolean {
+    return Boolean(this.refreshToken && this.config.linearClientId && this.config.linearClientSecret);
+  }
+
   /** Refresh the OAuth access token using the stored refresh token. */
   async refreshAccessToken(): Promise<void> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.doRefresh().finally(() => {
+      this.refreshing = null;
+    });
+    return this.refreshing;
+  }
+
+  private async doRefresh(): Promise<void> {
     if (!this.refreshToken || !this.config.linearClientId || !this.config.linearClientSecret) {
       throw new Error("Cannot refresh: refreshToken, clientId, or clientSecret missing from config");
     }
@@ -57,13 +117,24 @@ export class LinearService {
     }
     const data = (await res.json()) as { access_token: string; refresh_token?: string };
     this.accessToken = data.access_token;
+    // Linear rotates the refresh token and invalidates the previous one.
     if (data.refresh_token) this.refreshToken = data.refresh_token;
     this.client = new LinearClient({ accessToken: this.accessToken });
+
+    // Persist before returning: if this write is lost, the rotated refresh
+    // token is gone and the next restart cannot recover without a re-install.
+    try {
+      await this.store.write({ accessToken: this.accessToken, refreshToken: this.refreshToken });
+      console.log("Persisted refreshed Linear OAuth tokens");
+    } catch (err) {
+      console.error("Refreshed Linear tokens but failed to persist them:", err);
+    }
   }
 
   /** Resolve an issue ID into the context needed by the agent. */
   async getIssueContext(issueId: string): Promise<IssueContext> {
-    const issue = await this.client.issue(issueId);
+    return this.withAuth(async (client) => {
+    const issue = await client.issue(issueId);
     const comments = await issue.comments();
 
     return {
@@ -75,6 +146,7 @@ export class LinearService {
       labels: (await issue.labels()).nodes.map((l) => l.name),
       comments: comments.nodes.map((c) => c.body),
     };
+    });
   }
 
   /**
@@ -87,24 +159,35 @@ export class LinearService {
     issueId: string,
     destDir: string,
   ): Promise<Array<{ path: string; title?: string }>> {
-    const issue = await this.client.issue(issueId);
-    const comments = await issue.comments();
-    const texts = [issue.description ?? "", ...comments.nodes.map((c) => c.body ?? "")];
+    const texts = await this.withAuth(async (client) => {
+      const issue = await client.issue(issueId);
+      const comments = await issue.comments();
+      return [issue.description ?? "", ...comments.nodes.map((c) => c.body ?? "")];
+    });
 
     const urlRe = /https?:\/\/uploads\.linear\.app\/[^\s)\]"']+/g;
     const urls = Array.from(new Set(texts.flatMap((t) => t.match(urlRe) ?? [])));
     if (urls.length === 0) return [];
 
     mkdirSync(destDir, { recursive: true });
-    const auth = this.accessToken
-      ? `Bearer ${this.accessToken}`
-      : this.config.linearApiKey || "";
+    const authHeader = () =>
+      this.accessToken ? `Bearer ${this.accessToken}` : this.config.linearApiKey || "";
+
+    /** Uploads are plain HTTP, not GraphQL, so they need their own 401 retry. */
+    const fetchWithAuth = async (url: string): Promise<Response> => {
+      const auth = authHeader();
+      const res = await fetch(url, { headers: auth ? { Authorization: auth } : {} });
+      if (res.status !== 401 || !this.canRefresh()) return res;
+      await this.refreshAccessToken();
+      const retryAuth = authHeader();
+      return fetch(url, { headers: retryAuth ? { Authorization: retryAuth } : {} });
+    };
 
     const results: Array<{ path: string; title?: string }> = [];
     for (let i = 0; i < urls.length; i++) {
       const url = urls[i];
       try {
-        const res = await fetch(url, { headers: auth ? { Authorization: auth } : {} });
+        const res = await fetchWithAuth(url);
         if (!res.ok) {
           console.error(`Failed to download ${url}: ${res.status}`);
           continue;
@@ -151,7 +234,8 @@ export class LinearService {
     | { candidates: Array<{ slug: string; repoConfig: RepoConfig }> }
     | null
   > {
-    const issue = await this.client.issue(issueId);
+    const { team, labelNames } = await this.withAuth(async (client) => {
+    const issue = await client.issue(issueId);
     const team = await issue.team;
     const labels = (await issue.labels()).nodes;
     const labelNames = new Set<string>();
@@ -165,6 +249,8 @@ export class LinearService {
         labelNames.add(`${parentName}/${name}`);
       }
     }
+    return { team, labelNames };
+    });
 
     const entries = Object.entries(this.config.repos);
 
@@ -199,8 +285,9 @@ export class LinearService {
     agentSessionId: string,
     candidates: Array<{ slug: string; repoConfig: RepoConfig }>,
   ): Promise<void> {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await (this.client.createAgentActivity as any)({
+    await this.withAuth(async (client) =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (client.createAgentActivity as any)({
       agentSessionId,
       content: {
         type: "elicitation",
@@ -210,25 +297,24 @@ export class LinearService {
       signalMetadata: {
         options: candidates.map((c) => ({ label: c.slug, value: c.slug })),
       },
-    });
+      }),
+    );
   }
 
   /** Post a comment on a Linear issue. */
   async postComment(issueId: string, body: string): Promise<void> {
-    await this.client.createComment({
-      issueId,
-      body,
-    });
+    await this.withAuth((client) => client.createComment({ issueId, body }));
   }
 
   /** Update issue state (e.g., move to "In Progress"). */
   async updateIssueState(issueId: string, stateId: string): Promise<void> {
-    await this.client.updateIssue(issueId, { stateId });
+    await this.withAuth((client) => client.updateIssue(issueId, { stateId }));
   }
 
   /** Move the issue to the team's first `started` workflow state, if not already started/completed. */
   async moveToInProgress(issueId: string): Promise<void> {
-    const issue = await this.client.issue(issueId);
+    await this.withAuth(async (client) => {
+    const issue = await client.issue(issueId);
     const currentState = await issue.state;
     if (currentState && (currentState.type === "started" || currentState.type === "completed")) {
       return;
@@ -240,7 +326,8 @@ export class LinearService {
       .filter((s) => s.type === "started")
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))[0];
     if (!started) return;
-    await this.client.updateIssue(issueId, { stateId: started.id });
+    await client.updateIssue(issueId, { stateId: started.id });
+    });
   }
 
   /** Post an agent activity (thought/action/response/error) to a session. */
@@ -258,6 +345,6 @@ export class LinearService {
       if (!input.body.trim()) return;
       content = { type: input.type, body: input.body };
     }
-    await this.client.createAgentActivity({ agentSessionId, content });
+    await this.withAuth((client) => client.createAgentActivity({ agentSessionId, content }));
   }
 }

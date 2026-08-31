@@ -103,3 +103,40 @@ repos:
     expect(repo.labels).toEqual(["backend", "api"]);
   });
 });
+
+describe("loadConfig tokenStore", () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = join(tmpdir(), `talos-tokenstore-${Date.now()}.yaml`);
+  });
+
+  afterEach(() => {
+    try { unlinkSync(tmpFile); } catch { /* ignore */ }
+  });
+
+  test("defaults to an in-memory store", () => {
+    writeFileSync(tmpFile, "botUserId: bot-1\n");
+    expect(loadConfig(tmpFile).tokenStore.kind).toBe("none");
+  });
+
+  test("reads a kubernetes store", () => {
+    writeFileSync(tmpFile, `
+tokenStore:
+  kind: kubernetes
+  secretName: talos-oauth-tokens
+  namespace: talos
+`);
+    expect(loadConfig(tmpFile).tokenStore).toEqual({
+      kind: "kubernetes",
+      path: "./.talos-tokens.json",
+      secretName: "talos-oauth-tokens",
+      namespace: "talos",
+    });
+  });
+
+  test("rejects an unknown kind rather than silently ignoring it", () => {
+    writeFileSync(tmpFile, "tokenStore:\n  kind: redis\n");
+    expect(() => loadConfig(tmpFile)).toThrow(/Invalid tokenStore.kind/);
+  });
+});

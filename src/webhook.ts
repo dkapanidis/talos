@@ -44,6 +44,18 @@ type IssueHandler = (
 ) => Promise<void>;
 type CancelHandler = (agentSessionId: string) => void;
 
+/**
+ * Constant-time hex digest comparison. Returns false on any length mismatch,
+ * which `timingSafeEqual` throws on.
+ */
+export function signatureMatches(secret: string, rawBody: string, signature: string): boolean {
+  const expected = crypto.createHmac("sha256", secret).update(rawBody).digest("hex");
+  const a = Buffer.from(expected, "utf-8");
+  const b = Buffer.from(signature, "utf-8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 export function createServer(
   config: Config,
   onIssueAssigned: IssueHandler,
@@ -51,20 +63,41 @@ export function createServer(
 ) {
   const app = Fastify({ logger: true });
 
-  app.post("/webhook", async (request, reply) => {
-    // Verify webhook signature
-    if (config.linearWebhookSecret) {
-      const signature = request.headers["linear-signature"] as string;
-      if (signature) {
-        const body = JSON.stringify(request.body);
-        const expected = crypto
-          .createHmac("sha256", config.linearWebhookSecret)
-          .update(body)
-          .digest("hex");
-        if (signature !== expected) {
-          return reply.status(401).send({ error: "Invalid signature" });
-        }
+  // Keep the exact bytes Linear signed. Re-serialising the parsed object is not
+  // guaranteed to reproduce them, and any difference fails verification.
+  app.addContentTypeParser(
+    "application/json",
+    { parseAs: "string" },
+    (req, body: string, done) => {
+      (req as unknown as { rawBody: string }).rawBody = body;
+      try {
+        done(null, body === "" ? {} : JSON.parse(body));
+      } catch (err) {
+        done(err as Error, undefined);
       }
+    },
+  );
+
+  app.post("/webhook", async (request, reply) => {
+    // Verify the webhook signature. The endpoint is public, so an unsigned or
+    // wrongly signed request must be rejected outright rather than falling
+    // through to the handlers below — they start agent runs with real
+    // credentials.
+    if (config.linearWebhookSecret) {
+      const signature = request.headers["linear-signature"] as string | undefined;
+      if (!signature) {
+        request.log.warn("Rejecting webhook with no linear-signature header");
+        return reply.status(401).send({ error: "Missing signature" });
+      }
+      const rawBody = (request as unknown as { rawBody?: string }).rawBody ?? "";
+      if (!signatureMatches(config.linearWebhookSecret, rawBody, signature)) {
+        request.log.warn("Rejecting webhook with an invalid signature");
+        return reply.status(401).send({ error: "Invalid signature" });
+      }
+    } else {
+      request.log.warn(
+        "linearWebhookSecret is not set — accepting webhooks without signature verification",
+      );
     }
 
     const payload = request.body as LinearWebhookPayload;

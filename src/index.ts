@@ -9,6 +9,9 @@ const configPath = process.argv[2] || "config.yaml";
 const config = loadConfig(configPath);
 
 const linear = new LinearService(config);
+// Adopt any persisted OAuth tokens before serving: the pair in config.yaml is
+// only the bootstrap value and is stale after the first refresh.
+await linear.init();
 const git = new GitManager(resolve(config.workDir), config.githubToken);
 
 // Track active sessions to avoid duplicate runs

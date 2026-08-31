@@ -1,5 +1,8 @@
-import { describe, test, expect } from "bun:test";
-import { summarizeToolInput, buildPrompt } from "./agent.js";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import { summarizeToolInput, buildPrompt, runAgent } from "./agent.js";
 import type { IssueContext } from "./agent.js";
 import type { Config, RepoConfig } from "./config.js";
 
@@ -149,5 +152,81 @@ describe("buildPrompt", () => {
     const issueIdx = prompt.indexOf("## Task:");
     expect(globalIdx).toBeLessThan(repoIdx);
     expect(repoIdx).toBeLessThan(issueIdx);
+  });
+});
+
+/**
+ * These drive the real streaming path by putting a stub `claude` on PATH, so
+ * they assert what runAgent actually retains from a child process's stdout.
+ */
+describe("runAgent output", () => {
+  let binDir: string;
+  let originalPath: string | undefined;
+
+  /** Install a stub `claude` that prints `lines` and exits with `code`. */
+  const stubClaude = (lines: unknown[], code = 0) => {
+    const script = [
+      "#!/bin/sh",
+      ...lines.map((l) => `printf '%s\\n' ${JSON.stringify(JSON.stringify(l))}`),
+      `exit ${code}`,
+    ].join("\n");
+    writeFileSync(join(binDir, "claude"), script, { mode: 0o755 });
+  };
+
+  beforeEach(() => {
+    binDir = mkdtempSync(join(tmpdir(), "talos-agent-"));
+    originalPath = process.env.PATH;
+    process.env.PATH = `${binDir}:${process.env.PATH}`;
+  });
+
+  afterEach(() => {
+    process.env.PATH = originalPath;
+    rmSync(binDir, { recursive: true, force: true });
+  });
+
+  test("keeps the closing summary, not the whole stream", async () => {
+    // Stand in for the tool results that dominate a real --verbose stream: the
+    // full contents of every file the agent reads.
+    const bulk = "x".repeat(200_000);
+    stubClaude([
+      { type: "user", message: { content: [{ type: "tool_result", content: bulk }] } },
+      { type: "user", message: { content: [{ type: "tool_result", content: bulk }] } },
+      { type: "result", is_error: false, result: "Opened PR #7 with the tests." },
+    ]);
+
+    const result = await runAgent(baseConfig, undefined, baseIssue, binDir);
+
+    expect(result.success).toBe(true);
+    expect(result.output).toBe("Opened PR #7 with the tests.");
+    // The point of the change: retention is independent of stream size.
+    expect(result.output.length).toBeLessThan(1000);
+  });
+
+  test("reports the summary as a response event as well", async () => {
+    stubClaude([{ type: "result", is_error: false, result: "All done." }]);
+    const events: string[] = [];
+
+    await runAgent(baseConfig, undefined, baseIssue, binDir, (e) => {
+      if (e.kind === "response") events.push(e.body ?? "");
+    });
+
+    expect(events).toEqual(["All done."]);
+  });
+
+  test("reports a non-zero exit as failure", async () => {
+    stubClaude([{ type: "result", is_error: true, result: "boom" }], 1);
+
+    const result = await runAgent(baseConfig, undefined, baseIssue, binDir);
+
+    expect(result.success).toBe(false);
+  });
+
+  test("returns an empty summary when the stream carries no result", async () => {
+    // index.ts falls back to "Done." on this, rather than posting raw stream.
+    stubClaude([{ type: "assistant", message: { content: [{ type: "text", text: "thinking" }] } }]);
+
+    const result = await runAgent(baseConfig, undefined, baseIssue, binDir);
+
+    expect(result.output).toBe("");
   });
 });

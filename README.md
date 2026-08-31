@@ -114,6 +114,54 @@ Or pass a custom config path:
 node dist/index.js /path/to/config.yaml
 ```
 
+## GitHub integration
+
+The agent also responds on GitHub. It runs as a **GitHub App**, which is not a
+user account and so consumes no seat on a paid plan.
+
+Two triggers:
+
+- **`@talos` in an issue or PR comment.** Matched as literal text in the webhook
+  payload — GitHub never has to resolve the name to an account, which is what
+  makes this work for an App.
+- **Adding the `talos` label to an issue.** GitHub Apps cannot be assignees, so
+  a label stands in for assignment.
+
+The agent's own comments are ignored, so posting a result cannot re-trigger it.
+
+### Creating the App
+
+1. **Settings > Developer settings > GitHub Apps > New GitHub App**, on the
+   account or organisation that should own it.
+2. **Webhook URL**: `https://your-server/github/webhook`, and set a **webhook
+   secret** — deliveries without a valid signature are rejected.
+3. **Repository permissions**: Contents `Read & write` (clone and push),
+   Issues `Read & write` (read the thread, post results), Pull requests
+   `Read & write` (open PRs), Metadata `Read-only` (mandatory).
+4. **Subscribe to events**: Issue comment, Issues, Pull request review comment.
+5. **Where can this App be installed**: choose *Any account* if it needs to
+   serve repositories owned by more than one account or organisation.
+6. Generate a **private key** and note the **App ID**.
+7. **Install** the App, choosing *All repositories* so new repos are covered
+   without another visit.
+
+Then set:
+
+```yaml
+github:
+  appId: "123456"
+  privateKey: |
+    -----BEGIN RSA PRIVATE KEY-----
+    ...
+  webhookSecret: "..."
+  mentionName: "talos"   # defaults to botMentionName
+  triggerLabel: "talos"
+```
+
+`githubToken` stays as a fallback for repositories where the App is not
+installed; with the App configured, clone/push and `gh` inside the agent use a
+short-lived installation token instead.
+
 ## Repository routing
 
 Nothing has to be configured for the agent to find the right repo. For each
@@ -163,6 +211,11 @@ Each issue runs in its own worktree, so multiple issues can be worked on in para
 | `repos.<slug>.systemPrompt` | — | Repo-specific system prompt |
 | `repos.<slug>.teamIds` | — | Optional: Linear team keys that map to this repo |
 | `repos.<slug>.labels` | — | Optional: issue labels that map to this repo |
+| `github.appId` | `GITHUB_APP_ID` | GitHub App ID |
+| `github.privateKey` | `GITHUB_APP_PRIVATE_KEY` | GitHub App PEM private key |
+| `github.webhookSecret` | `GITHUB_WEBHOOK_SECRET` | Secret for `X-Hub-Signature-256` verification |
+| `github.mentionName` | — | Literal `@name` that triggers a run (default: `botMentionName`) |
+| `github.triggerLabel` | — | Label that triggers a run (default: `talos`) |
 
 ## Local Development
 

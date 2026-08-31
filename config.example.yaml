@@ -86,3 +86,17 @@ repos:
     # the agent posts a select-elicitation asking the user to pick.
     labels:
       - "repo:frontend"
+
+# --- GitHub App (optional) ---
+# Responds to "@talos" in issue/PR comments and to the trigger label being added.
+# An App consumes no seat on a paid plan, unlike a machine user — but it also
+# cannot be an assignee, which is why the label trigger exists.
+github:
+  appId: ""
+  privateKey: |
+    -----BEGIN RSA PRIVATE KEY-----
+    ...
+    -----END RSA PRIVATE KEY-----
+  webhookSecret: ""
+  mentionName: "talos"    # defaults to botMentionName
+  triggerLabel: "talos"

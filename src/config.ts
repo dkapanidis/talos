@@ -32,8 +32,14 @@ export interface GitHubConfig {
   privateKey: string;
   /** Webhook secret configured on the App. */
   webhookSecret: string;
-  /** Literal @name that triggers the agent in a comment. Defaults to botMentionName. */
+  /**
+   * Literal @name that triggers the agent in a comment. Defaults to
+   * botMentionName. Pick one no GitHub account holds — GitHub resolves
+   * mentions that match a real login and notifies that person.
+   */
   mentionName: string;
+  /** Slash command that triggers the agent, e.g. "/talos add tests". */
+  commandName: string;
   /** Adding this label to an issue triggers the agent — Apps cannot be assignees. */
   triggerLabel: string;
 }
@@ -114,6 +120,7 @@ function loadGitHubConfig(raw: Record<string, unknown> | undefined, botMentionNa
     privateKey: privateKey.includes("\\n") ? privateKey.replace(/\\n/g, "\n") : privateKey,
     webhookSecret: (raw?.webhookSecret as string) || process.env.GITHUB_WEBHOOK_SECRET || "",
     mentionName: (raw?.mentionName as string) || botMentionName,
+    commandName: (raw?.commandName as string) || "talos",
     triggerLabel: (raw?.triggerLabel as string) || "talos",
   };
 }

@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import Fastify from "fastify";
 import type { Config } from "./config.js";
-import { isBotActor, mentionsAgent, verifyGitHubSignature } from "./github.js";
+import { isBotActor, triggersAgent, verifyGitHubSignature } from "./github.js";
 
 export interface LinearWebhookPayload {
   action: string;
@@ -234,8 +234,8 @@ export function createServer(
     ) {
       const body = payload.comment?.body ?? "";
       const number = payload.issue?.number ?? payload.pull_request?.number;
-      if (number && mentionsAgent(body, config.github.mentionName)) {
-        app.log.info(`Mentioned in ${slug}#${number}, starting agent...`);
+      if (number && triggersAgent(body, config.github.mentionName, config.github.commandName)) {
+        app.log.info(`Triggered on ${slug}#${number}, starting agent...`);
         onGitHubIssue(slug, number, body).catch((err) => {
           app.log.error(err, `Failed to handle ${slug}#${number}`);
         });

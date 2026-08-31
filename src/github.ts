@@ -210,15 +210,32 @@ export function branchNameFor(number: number, title: string, prefix: string): st
 }
 
 /**
- * Whether a comment is addressed to the agent.
+ * Whether a comment @-mentions the agent.
  *
- * Matched as literal text, not as a GitHub mention: an App cannot be mentioned
- * or assigned, but the webhook carries the comment body regardless, so
- * "@talos" works without the name resolving to any account.
+ * Matched as literal text, not as a resolved GitHub mention: an App cannot be
+ * mentioned or assigned, but the webhook carries the comment body regardless.
+ *
+ * Note that GitHub *will* resolve the name if a real account happens to own it,
+ * notifying that person — so prefer a mention name nobody holds, or the slash
+ * command below, which lives outside the account namespace entirely.
  */
 export function mentionsAgent(body: string, mentionName: string): boolean {
   if (!mentionName) return false;
   return new RegExp(`(^|[^\\w/])@${escapeRegex(mentionName)}\\b`, "i").test(body);
+}
+
+/**
+ * Whether a comment issues the slash command, e.g. "/talos add tests".
+ * Must start a line, so it cannot fire from prose or a quoted reply.
+ */
+export function commandsAgent(body: string, commandName: string): boolean {
+  if (!commandName) return false;
+  return new RegExp(`^[ \\t]*/${escapeRegex(commandName)}\\b`, "im").test(body);
+}
+
+/** Either trigger form. */
+export function triggersAgent(body: string, mentionName: string, commandName: string): boolean {
+  return mentionsAgent(body, mentionName) || commandsAgent(body, commandName);
 }
 
 function escapeRegex(value: string): string {

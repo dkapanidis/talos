@@ -2,8 +2,10 @@ import { describe, test, expect } from "bun:test";
 import crypto from "crypto";
 import {
   branchNameFor,
+  commandsAgent,
   isBotActor,
   mentionsAgent,
+  triggersAgent,
   verifyGitHubSignature,
   GitHubApp,
 } from "./github.js";
@@ -99,7 +101,8 @@ describe("GitHubApp", () => {
     appId: "",
     privateKey: "",
     webhookSecret: "",
-    mentionName: "talos",
+    mentionName: "harbur-talos",
+    commandName: "talos",
     triggerLabel: "talos",
   };
 
@@ -175,5 +178,44 @@ describe("GitHubApp", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("commandsAgent", () => {
+  test("matches a command starting the comment", () => {
+    expect(commandsAgent("/talos add tests", "talos")).toBe(true);
+  });
+
+  test("matches a command on a later line", () => {
+    expect(commandsAgent("Some context.\n/talos add tests", "talos")).toBe(true);
+  });
+
+  test("tolerates leading whitespace", () => {
+    expect(commandsAgent("  /talos go", "talos")).toBe(true);
+  });
+
+  test("does not match mid-sentence, so prose cannot trigger a run", () => {
+    expect(commandsAgent("run /talos to start", "talos")).toBe(false);
+  });
+
+  test("does not match a URL path or a longer command", () => {
+    expect(commandsAgent("https://example.com/talos", "talos")).toBe(false);
+    expect(commandsAgent("/talosaurus", "talos")).toBe(false);
+  });
+});
+
+describe("triggersAgent", () => {
+  test("accepts either form", () => {
+    expect(triggersAgent("@harbur-talos hi", "harbur-talos", "talos")).toBe(true);
+    expect(triggersAgent("/talos hi", "harbur-talos", "talos")).toBe(true);
+  });
+
+  test("ignores a comment using neither", () => {
+    expect(triggersAgent("looks good", "harbur-talos", "talos")).toBe(false);
+  });
+
+  test("does not fire on a bare mention of an unrelated account", () => {
+    // @talos is a real GitHub user; only the configured name counts.
+    expect(triggersAgent("cc @talos", "harbur-talos", "talos")).toBe(false);
   });
 });

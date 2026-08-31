@@ -26,7 +26,8 @@ function testConfig(overrides: Partial<Config> = {}): Config {
       appId: "",
       privateKey: "",
       webhookSecret: GH_SECRET,
-      mentionName: "talos",
+      mentionName: "harbur-talos",
+      commandName: "talos",
       triggerLabel: "talos",
     },
     ...overrides,
@@ -219,9 +220,19 @@ describe("POST /github/webhook", () => {
     const app = createServer(testConfig(), async () => {}, undefined, async (slug, n, p) => {
       seen.push([slug, n, p]);
     });
-    const res = await inject(app, "issue_comment", comment("@talos please fix the build"));
+    const res = await inject(app, "issue_comment", comment("@harbur-talos please fix the build"));
     expect(res.statusCode).toBe(200);
-    expect(seen).toEqual([["harbur/ray-app", 12, "@talos please fix the build"]]);
+    expect(seen).toEqual([["harbur/ray-app", 12, "@harbur-talos please fix the build"]]);
+    await app.close();
+  });
+
+  test("dispatches on the slash command", async () => {
+    const seen: Array<[string, number]> = [];
+    const app = createServer(testConfig(), async () => {}, undefined, async (slug, n) => {
+      seen.push([slug, n]);
+    });
+    await inject(app, "issue_comment", comment("/talos add tests for the parser"));
+    expect(seen).toEqual([["harbur/ray-app", 12]]);
     await app.close();
   });
 
@@ -240,7 +251,7 @@ describe("POST /github/webhook", () => {
     const app = createServer(testConfig(), async () => {}, undefined, async () => {
       called = true;
     });
-    await inject(app, "issue_comment", comment("@talos done", "talos[bot]"));
+    await inject(app, "issue_comment", comment("@harbur-talos done", "harbur-talos[bot]"));
     expect(called).toBe(false);
     await app.close();
   });

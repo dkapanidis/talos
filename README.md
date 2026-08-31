@@ -121,9 +121,13 @@ user account and so consumes no seat on a paid plan.
 
 Two triggers:
 
-- **`@talos` in an issue or PR comment.** Matched as literal text in the webhook
-  payload — GitHub never has to resolve the name to an account, which is what
-  makes this work for an App.
+- **`/talos <instruction>` at the start of a line** in an issue or PR comment.
+  Slash commands live outside the account namespace, so this is the safe form.
+- **`@<mentionName>` in a comment.** Matched as literal text in the webhook
+  payload — GitHub never has to resolve the name for the trigger to fire. Pick a
+  name **no GitHub account holds**: if one does, GitHub resolves the mention and
+  notifies that person on every message. (`@talos`, `@talos-agent`, `@talos-bot`
+  are all real accounts.)
 - **Adding the `talos` label to an issue.** GitHub Apps cannot be assignees, so
   a label stands in for assignment.
 
@@ -132,7 +136,8 @@ The agent's own comments are ignored, so posting a result cannot re-trigger it.
 ### Creating the App
 
 1. **Settings > Developer settings > GitHub Apps > New GitHub App**, on the
-   account or organisation that should own it.
+   account or organisation that should own it. App names share the account
+   namespace, so a name held by any user or org is unavailable.
 2. **Webhook URL**: `https://your-server/github/webhook`, and set a **webhook
    secret** — deliveries without a valid signature are rejected.
 3. **Repository permissions**: Contents `Read & write` (clone and push),
@@ -154,7 +159,8 @@ github:
     -----BEGIN RSA PRIVATE KEY-----
     ...
   webhookSecret: "..."
-  mentionName: "talos"   # defaults to botMentionName
+  commandName: "talos"          # /talos <instruction>
+  mentionName: "harbur-talos"   # must not be a real GitHub account
   triggerLabel: "talos"
 ```
 

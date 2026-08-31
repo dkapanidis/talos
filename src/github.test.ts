@@ -5,6 +5,7 @@ import {
   commandsAgent,
   isBotActor,
   mentionsAgent,
+  redactTokens,
   triggersAgent,
   verifyGitHubSignature,
   GitHubApp,
@@ -217,5 +218,26 @@ describe("triggersAgent", () => {
   test("does not fire on a bare mention of an unrelated account", () => {
     // @talos is a real GitHub user; only the configured name counts.
     expect(triggersAgent("cc @talos", "harbur-talos", "talos")).toBe(false);
+  });
+});
+
+describe("redactTokens", () => {
+  test("redacts credentials embedded in a clone URL", () => {
+    const err =
+      "Command failed: git clone https://x-access-token:ghp_AbCdEf123456@github.com/harbur/ray-app /app/work";
+    const out = redactTokens(err);
+    expect(out).not.toContain("ghp_AbCdEf123456");
+    expect(out).toContain("https://***@github.com/harbur/ray-app");
+  });
+
+  test("redacts a bare token not attached to a URL", () => {
+    expect(redactTokens("token github_pat_11ABCDE_xyz expired")).toBe(
+      "token github_pat_*** expired",
+    );
+  });
+
+  test("leaves text with no credentials alone", () => {
+    const msg = "fatal: Authentication failed for 'https://github.com/harbur/ray-app/'";
+    expect(redactTokens(msg)).toBe(msg);
   });
 });

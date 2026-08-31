@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import Fastify from "fastify";
 import type { Config } from "./config.js";
+import { isBotActor, triggersAgent, verifyGitHubSignature } from "./github.js";
 
 export interface LinearWebhookPayload {
   action: string;
@@ -44,6 +45,23 @@ type IssueHandler = (
 ) => Promise<void>;
 type CancelHandler = (agentSessionId: string) => void;
 
+/** Triggered by a GitHub comment or label, rather than a Linear event. */
+export type GitHubIssueHandler = (
+  repoSlug: string,
+  issueNumber: number,
+  userPrompt?: string,
+) => Promise<void>;
+
+interface GitHubWebhookPayload {
+  action?: string;
+  repository?: { full_name?: string };
+  sender?: { login?: string; type?: string };
+  issue?: { number?: number; pull_request?: unknown };
+  pull_request?: { number?: number };
+  comment?: { body?: string; user?: { login?: string; type?: string } };
+  label?: { name?: string };
+}
+
 /**
  * Constant-time hex digest comparison. Returns false on any length mismatch,
  * which `timingSafeEqual` throws on.
@@ -60,6 +78,7 @@ export function createServer(
   config: Config,
   onIssueAssigned: IssueHandler,
   onCancel?: CancelHandler,
+  onGitHubIssue?: GitHubIssueHandler,
 ) {
   const app = Fastify({ logger: true });
 
@@ -166,6 +185,71 @@ export function createServer(
         );
         onIssueAssigned(data.id).catch((err) => {
           app.log.error(err, `Failed to handle issue ${data.identifier}`);
+        });
+      }
+    }
+
+    return reply.status(200).send({ ok: true });
+  });
+
+  app.post("/github/webhook", async (request, reply) => {
+    // Same rule as the Linear endpoint: this is public, and a delivery starts an
+    // agent run with real credentials, so an unverifiable one is rejected.
+    if (config.github.webhookSecret) {
+      const signature = request.headers["x-hub-signature-256"] as string | undefined;
+      if (!signature) {
+        request.log.warn("Rejecting GitHub webhook with no x-hub-signature-256 header");
+        return reply.status(401).send({ error: "Missing signature" });
+      }
+      const rawBody = (request as unknown as { rawBody?: string }).rawBody ?? "";
+      if (!verifyGitHubSignature(config.github.webhookSecret, rawBody, signature)) {
+        request.log.warn("Rejecting GitHub webhook with an invalid signature");
+        return reply.status(401).send({ error: "Invalid signature" });
+      }
+    } else {
+      request.log.warn(
+        "github.webhookSecret is not set — accepting GitHub webhooks without verification",
+      );
+    }
+
+    const event = request.headers["x-github-event"] as string | undefined;
+    const payload = request.body as GitHubWebhookPayload;
+    const slug = payload.repository?.full_name;
+
+    app.log.info({ event, action: payload.action, repo: slug }, "GitHub webhook received");
+
+    if (event === "ping") return reply.status(200).send({ ok: true });
+    if (!slug || !onGitHubIssue) return reply.status(200).send({ ok: true });
+
+    // Never react to our own comments, or another bot's: the agent posts its
+    // results as a comment, which would otherwise trigger it again.
+    if (isBotActor(payload.sender?.login, payload.sender?.type)) {
+      return reply.status(200).send({ ok: true });
+    }
+
+    // A comment mentioning the agent, on an issue or a pull request.
+    if (
+      (event === "issue_comment" || event === "pull_request_review_comment") &&
+      payload.action === "created"
+    ) {
+      const body = payload.comment?.body ?? "";
+      const number = payload.issue?.number ?? payload.pull_request?.number;
+      if (number && triggersAgent(body, config.github.mentionName, config.github.commandName)) {
+        app.log.info(`Triggered on ${slug}#${number}, starting agent...`);
+        onGitHubIssue(slug, number, body).catch((err) => {
+          app.log.error(err, `Failed to handle ${slug}#${number}`);
+        });
+      }
+    }
+
+    // A label standing in for assignment, which GitHub Apps cannot receive.
+    if (event === "issues" && payload.action === "labeled") {
+      const number = payload.issue?.number;
+      const label = payload.label?.name?.toLowerCase();
+      if (number && label && label === config.github.triggerLabel.toLowerCase()) {
+        app.log.info(`Label ${label} added to ${slug}#${number}, starting agent...`);
+        onGitHubIssue(slug, number).catch((err) => {
+          app.log.error(err, `Failed to handle ${slug}#${number}`);
         });
       }
     }

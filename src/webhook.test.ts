@@ -4,6 +4,7 @@ import { createServer, signatureMatches } from "./webhook.js";
 import type { Config } from "./config.js";
 
 const SECRET = "test-webhook-secret";
+const GH_SECRET = "test-github-secret";
 
 function testConfig(overrides: Partial<Config> = {}): Config {
   return {
@@ -21,6 +22,14 @@ function testConfig(overrides: Partial<Config> = {}): Config {
     systemPrompt: "",
     repos: {},
     tokenStore: { kind: "none", path: "", secretName: "", namespace: "", repoPath: "", repoSecretName: "" },
+    github: {
+      appId: "",
+      privateKey: "",
+      webhookSecret: GH_SECRET,
+      mentionName: "harbur-talos",
+      commandName: "talos",
+      triggerLabel: "talos",
+    },
     ...overrides,
   };
 }
@@ -147,6 +156,142 @@ describe("POST /webhook signature enforcement", () => {
 
     expect(res.statusCode).toBe(200);
     expect(handled).toBe(true);
+    await app.close();
+  });
+});
+
+describe("POST /github/webhook", () => {
+  function ghSign(body: string, secret = GH_SECRET): string {
+    return `sha256=${crypto.createHmac("sha256", secret).update(body).digest("hex")}`;
+  }
+
+  function inject(
+    app: ReturnType<typeof createServer>,
+    event: string,
+    payload: unknown,
+    signature?: string,
+  ) {
+    const body = JSON.stringify(payload);
+    return app.inject({
+      method: "POST",
+      url: "/github/webhook",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": event,
+        ...(signature === undefined ? { "x-hub-signature-256": ghSign(body) } : signature ? { "x-hub-signature-256": signature } : {}),
+      },
+      payload: body,
+    });
+  }
+
+  const comment = (body: string, login = "dkapanidis") => ({
+    action: "created",
+    repository: { full_name: "harbur/ray-app" },
+    sender: { login, type: login.endsWith("[bot]") ? "Bot" : "User" },
+    issue: { number: 12 },
+    comment: { body, user: { login } },
+  });
+
+  test("rejects an unsigned delivery", async () => {
+    let called = false;
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {
+      called = true;
+    });
+    const res = await inject(app, "issue_comment", comment("@talos fix it"), "");
+    expect(res.statusCode).toBe(401);
+    expect(called).toBe(false);
+    await app.close();
+  });
+
+  test("rejects a wrongly signed delivery", async () => {
+    let called = false;
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {
+      called = true;
+    });
+    const payload = comment("@talos fix it");
+    const res = await inject(app, "issue_comment", payload, ghSign(JSON.stringify(payload), "wrong"));
+    expect(res.statusCode).toBe(401);
+    expect(called).toBe(false);
+    await app.close();
+  });
+
+  test("dispatches on a mention in an issue comment", async () => {
+    const seen: Array<[string, number, string | undefined]> = [];
+    const app = createServer(testConfig(), async () => {}, undefined, async (slug, n, p) => {
+      seen.push([slug, n, p]);
+    });
+    const res = await inject(app, "issue_comment", comment("@harbur-talos please fix the build"));
+    expect(res.statusCode).toBe(200);
+    expect(seen).toEqual([["harbur/ray-app", 12, "@harbur-talos please fix the build"]]);
+    await app.close();
+  });
+
+  test("dispatches on the slash command", async () => {
+    const seen: Array<[string, number]> = [];
+    const app = createServer(testConfig(), async () => {}, undefined, async (slug, n) => {
+      seen.push([slug, n]);
+    });
+    await inject(app, "issue_comment", comment("/talos add tests for the parser"));
+    expect(seen).toEqual([["harbur/ray-app", 12]]);
+    await app.close();
+  });
+
+  test("ignores a comment that does not mention the agent", async () => {
+    let called = false;
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {
+      called = true;
+    });
+    await inject(app, "issue_comment", comment("looks good to me"));
+    expect(called).toBe(false);
+    await app.close();
+  });
+
+  test("ignores its own comments so a run cannot re-trigger itself", async () => {
+    let called = false;
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {
+      called = true;
+    });
+    await inject(app, "issue_comment", comment("@harbur-talos done", "harbur-talos[bot]"));
+    expect(called).toBe(false);
+    await app.close();
+  });
+
+  test("dispatches when the trigger label is added", async () => {
+    const seen: Array<[string, number]> = [];
+    const app = createServer(testConfig(), async () => {}, undefined, async (slug, n) => {
+      seen.push([slug, n]);
+    });
+    await inject(app, "issues", {
+      action: "labeled",
+      repository: { full_name: "harbur/ray-app" },
+      sender: { login: "dkapanidis", type: "User" },
+      issue: { number: 5 },
+      label: { name: "talos" },
+    });
+    expect(seen).toEqual([["harbur/ray-app", 5]]);
+    await app.close();
+  });
+
+  test("ignores an unrelated label", async () => {
+    let called = false;
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {
+      called = true;
+    });
+    await inject(app, "issues", {
+      action: "labeled",
+      repository: { full_name: "harbur/ray-app" },
+      sender: { login: "dkapanidis", type: "User" },
+      issue: { number: 5 },
+      label: { name: "bug" },
+    });
+    expect(called).toBe(false);
+    await app.close();
+  });
+
+  test("answers the ping GitHub sends when the hook is created", async () => {
+    const app = createServer(testConfig(), async () => {}, undefined, async () => {});
+    const res = await inject(app, "ping", { zen: "Design for failure." });
+    expect(res.statusCode).toBe(200);
     await app.close();
   });
 });

@@ -23,24 +23,32 @@ export class GitManager {
     return join(this.workDir, "worktrees", `${repoSlug.replace("/", "-")}-${safeBranch}`);
   }
 
-  private authedUrl(url: string): string {
-    if (!this.githubToken) return url;
-    return url.replace("https://", `https://x-access-token:${this.githubToken}@`);
+  private authedUrl(url: string, token?: string): string {
+    const effective = token || this.githubToken;
+    if (!effective) return url;
+    // Already carries credentials (e.g. a GitHub App clone URL).
+    if (/^https:\/\/[^/]*@/.test(url)) return url;
+    return url.replace("https://", `https://x-access-token:${effective}@`);
   }
 
-  async ensureCloned(repoSlug: string, repoUrl: string): Promise<string> {
+  async ensureCloned(repoSlug: string, repoUrl: string, token?: string): Promise<string> {
     const dir = this.repoDir(repoSlug);
     if (existsSync(dir)) {
       await exec("git", ["fetch", "--all"], { cwd: dir });
       await exec("git", ["pull", "--ff-only"], { cwd: dir }).catch(() => {});
       return dir;
     }
-    await exec("git", ["clone", this.authedUrl(repoUrl), dir]);
+    await exec("git", ["clone", this.authedUrl(repoUrl, token), dir]);
     return dir;
   }
 
-  async createWorktree(repoSlug: string, repoUrl: string, branchName: string): Promise<string> {
-    const repoDir = await this.ensureCloned(repoSlug, repoUrl);
+  async createWorktree(
+    repoSlug: string,
+    repoUrl: string,
+    branchName: string,
+    token?: string,
+  ): Promise<string> {
+    const repoDir = await this.ensureCloned(repoSlug, repoUrl, token);
     const wtDir = this.worktreeDir(repoSlug, branchName);
 
     if (existsSync(wtDir)) {

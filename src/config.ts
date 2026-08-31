@@ -25,6 +25,25 @@ export interface TokenStoreConfig {
   namespace: string;
 }
 
+export interface GitHubConfig {
+  /** Numeric App ID from the GitHub App's settings page. */
+  appId: string;
+  /** PEM private key generated for the App. */
+  privateKey: string;
+  /** Webhook secret configured on the App. */
+  webhookSecret: string;
+  /**
+   * Literal @name that triggers the agent in a comment. Defaults to
+   * botMentionName. Pick one no GitHub account holds — GitHub resolves
+   * mentions that match a real login and notifies that person.
+   */
+  mentionName: string;
+  /** Slash command that triggers the agent, e.g. "/talos add tests". */
+  commandName: string;
+  /** Adding this label to an issue triggers the agent — Apps cannot be assignees. */
+  triggerLabel: string;
+}
+
 export interface Config {
   linearApiKey: string;
   linearAccessToken: string;
@@ -40,6 +59,7 @@ export interface Config {
   systemPrompt: string;
   repos: Record<string, RepoConfig>;
   tokenStore: TokenStoreConfig;
+  github: GitHubConfig;
 }
 
 export function loadConfig(path: string): Config {
@@ -63,6 +83,10 @@ export function loadConfig(path: string): Config {
     systemPrompt: (raw.systemPrompt as string) || "",
     repos: (raw.repos as Record<string, RepoConfig>) || {},
     tokenStore: loadTokenStoreConfig(raw.tokenStore as Record<string, unknown> | undefined),
+    github: loadGitHubConfig(
+      raw.github as Record<string, unknown> | undefined,
+      (raw.botMentionName as string) || "",
+    ),
   };
 }
 
@@ -83,5 +107,20 @@ function loadTokenStoreConfig(raw?: Record<string, unknown>): TokenStoreConfig {
     repoPath: (raw?.repoPath as string) || "./.talos-repos.json",
     repoSecretName: (raw?.repoSecretName as string) || "talos-repo-memory",
     namespace: (raw?.namespace as string) || process.env.POD_NAMESPACE || "",
+  };
+}
+
+/** GitHub App credentials and triggers. All optional — omit to disable GitHub. */
+function loadGitHubConfig(raw: Record<string, unknown> | undefined, botMentionName: string): GitHubConfig {
+  const privateKey =
+    (raw?.privateKey as string) || process.env.GITHUB_APP_PRIVATE_KEY || "";
+  return {
+    appId: String((raw?.appId as string | number) ?? process.env.GITHUB_APP_ID ?? ""),
+    // Tolerate \n-escaped PEMs, which is how they survive most secret stores.
+    privateKey: privateKey.includes("\\n") ? privateKey.replace(/\\n/g, "\n") : privateKey,
+    webhookSecret: (raw?.webhookSecret as string) || process.env.GITHUB_WEBHOOK_SECRET || "",
+    mentionName: (raw?.mentionName as string) || botMentionName,
+    commandName: (raw?.commandName as string) || "talos",
+    triggerLabel: (raw?.triggerLabel as string) || "talos",
   };
 }

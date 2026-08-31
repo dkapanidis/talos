@@ -2,6 +2,7 @@ import { join, resolve } from "path";
 import { runAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { GitManager } from "./git.js";
+import { GitHubApp, branchNameFor } from "./github.js";
 import { LinearService } from "./linear.js";
 import { createServer } from "./webhook.js";
 
@@ -13,6 +14,7 @@ const linear = new LinearService(config);
 // only the bootstrap value and is stale after the first refresh.
 await linear.init();
 const git = new GitManager(resolve(config.workDir), config.githubToken);
+const github = new GitHubApp(config.github, config.githubToken);
 
 // Track active sessions to avoid duplicate runs
 const activeSessions = new Set<string>();
@@ -177,8 +179,82 @@ async function handleIssue(
   }
 }
 
+/**
+ * Run the agent for a GitHub issue or pull request. The repo is named by the
+ * event, so none of the Linear repo-resolution applies; results are posted back
+ * as an issue comment.
+ */
+async function handleGitHubIssue(
+  repoSlug: string,
+  issueNumber: number,
+  userPrompt?: string,
+): Promise<void> {
+  const key = `${repoSlug}#${issueNumber}`;
+  if (activeSessions.has(key)) {
+    console.log(`${key} already has an active session, skipping`);
+    return;
+  }
+  activeSessions.add(key);
+
+  try {
+    const issue = await github.getIssue(repoSlug, issueNumber);
+    console.log(`Working on ${key}: ${issue.title}`);
+
+    const branchName = branchNameFor(issue.number, issue.title, config.github.mentionName || "talos");
+    const token = await github.tokenFor(repoSlug);
+    const worktreeDir = await git.createWorktree(
+      repoSlug,
+      `https://github.com/${repoSlug}.git`,
+      branchName,
+      token,
+    );
+    console.log(`Worktree ready at ${worktreeDir}`);
+
+    const result = await runAgent(
+      config,
+      config.repos[repoSlug],
+      {
+        identifier: key,
+        title: issue.title,
+        description: issue.body,
+        branchName,
+        url: issue.url,
+        labels: issue.labels,
+        // The mention that triggered this run is the instruction to follow.
+        comments: userPrompt ? [...issue.comments, userPrompt] : issue.comments,
+      },
+      worktreeDir,
+      (event) => {
+        const preview =
+          event.kind === "action"
+            ? `${event.action ?? ""} ${event.parameter ?? ""}`
+            : event.body ?? "";
+        process.stdout.write(`[agent:${key}:${event.kind}] ${preview.slice(0, 200)}\n`);
+      },
+      undefined,
+      token,
+    );
+
+    const body = result.success
+      ? result.output.trim() || "Done."
+      : "Agent finished with errors. Manual review needed.";
+    await github.postComment(repoSlug, issueNumber, body).catch((err) => {
+      console.error(`Failed to comment on ${key}:`, err);
+    });
+
+    await git.cleanupWorktree(repoSlug, branchName);
+  } catch (err) {
+    console.error(`Failed to handle ${key}:`, err);
+    await github
+      .postComment(repoSlug, issueNumber, `Could not complete this request: ${String(err)}`)
+      .catch(() => {});
+  } finally {
+    activeSessions.delete(key);
+  }
+}
+
 // Start the server
-const app = createServer(config, handleIssue, cancelSession);
+const app = createServer(config, handleIssue, cancelSession, handleGitHubIssue);
 
 app.listen({ port: config.server.port, host: config.server.host }, (err) => {
   if (err) {

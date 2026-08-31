@@ -110,6 +110,8 @@ export function runAgent(
   workDir: string,
   onEvent?: (event: AgentEvent) => void,
   abortSignal?: AbortSignal,
+  /** Overrides GH_TOKEN for this run — a GitHub App installation token. */
+  githubToken?: string,
 ): Promise<AgentResult> {
   const prompt = buildPrompt(config, repoConfig, issue);
 
@@ -173,7 +175,7 @@ export function runAgent(
         env: (() => {
           const env: Record<string, string | undefined> = {
             ...process.env,
-            GH_TOKEN: config.githubToken,
+            GH_TOKEN: githubToken || config.githubToken,
           };
           if (!process.env.ANTHROPIC_API_KEY) delete env.ANTHROPIC_API_KEY;
           return env as NodeJS.ProcessEnv;

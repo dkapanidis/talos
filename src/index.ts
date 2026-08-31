@@ -3,6 +3,7 @@ import { runAgent } from "./agent.js";
 import { loadConfig } from "./config.js";
 import { GitManager } from "./git.js";
 import { GitHubApp, branchNameFor } from "./github.js";
+import { GitHubProgress } from "./progress.js";
 import { LinearService } from "./linear.js";
 import { createServer } from "./webhook.js";
 
@@ -188,6 +189,7 @@ async function handleGitHubIssue(
   repoSlug: string,
   issueNumber: number,
   userPrompt?: string,
+  triggerCommentId?: number,
 ): Promise<void> {
   const key = `${repoSlug}#${issueNumber}`;
   if (activeSessions.has(key)) {
@@ -196,11 +198,23 @@ async function handleGitHubIssue(
   }
   activeSessions.add(key);
 
+  // Acknowledge immediately: the run takes minutes, and an unreacted comment
+  // looks like nothing happened.
+  if (triggerCommentId) {
+    await github
+      .addReaction(repoSlug, triggerCommentId)
+      .catch((err) => console.error(`Failed to react on ${key}:`, err));
+  }
+
+  let progress: GitHubProgress | undefined;
+
   try {
     const issue = await github.getIssue(repoSlug, issueNumber);
     console.log(`Working on ${key}: ${issue.title}`);
 
     const branchName = branchNameFor(issue.number, issue.title, config.github.mentionName || "talos");
+    progress = new GitHubProgress(github, repoSlug, issueNumber, branchName);
+    await progress.start();
     const token = await github.tokenFor(repoSlug);
     const worktreeDir = await git.createWorktree(
       repoSlug,
@@ -225,6 +239,7 @@ async function handleGitHubIssue(
       },
       worktreeDir,
       (event) => {
+        progress?.record(event);
         const preview =
           event.kind === "action"
             ? `${event.action ?? ""} ${event.parameter ?? ""}`
@@ -238,16 +253,14 @@ async function handleGitHubIssue(
     const body = result.success
       ? result.output.trim() || "Done."
       : "Agent finished with errors. Manual review needed.";
-    await github.postComment(repoSlug, issueNumber, body).catch((err) => {
-      console.error(`Failed to comment on ${key}:`, err);
-    });
+    await progress.finish(body);
 
     await git.cleanupWorktree(repoSlug, branchName);
   } catch (err) {
     console.error(`Failed to handle ${key}:`, err);
-    await github
-      .postComment(repoSlug, issueNumber, `Could not complete this request: ${String(err)}`)
-      .catch(() => {});
+    const message = `Could not complete this request: ${String(err)}`;
+    if (progress) await progress.finish(message);
+    else await github.postComment(repoSlug, issueNumber, message).catch(() => {});
   } finally {
     activeSessions.delete(key);
   }

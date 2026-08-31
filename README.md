@@ -133,6 +133,21 @@ Two triggers:
 
 The agent's own comments are ignored, so posting a result cannot re-trigger it.
 
+### Live progress
+
+GitHub has no streaming surface for issues, so progress is shown the way
+GitHub's own bots do it — **one comment, rewritten as the run proceeds**:
+
+1. The triggering comment gets a 👀 reaction the moment the webhook lands.
+2. A status comment is posted immediately, naming the branch.
+3. That same comment is edited as the agent works, showing the latest status
+   and a collapsible list of the most recent steps.
+4. When the run ends, the comment is replaced by the final result.
+
+Edits are throttled to one per 10 seconds and coalesced, so a fast-moving run
+produces a steadily updating comment rather than a burst of writes that would
+trip GitHub's secondary rate limits.
+
 ### Creating the App
 
 1. **Settings > Developer settings > GitHub Apps > New GitHub App**, on the

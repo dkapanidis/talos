@@ -169,10 +169,33 @@ export class GitHubApp {
     };
   }
 
+  /** Post a comment, returning its id so it can be edited as work proceeds. */
+  async createComment(slug: string, number: number, body: string): Promise<number> {
+    const created = await this.api<{ id: number }>(
+      slug,
+      `/repos/${slug}/issues/${number}/comments`,
+      { method: "POST", body: JSON.stringify({ body }) },
+    );
+    return created.id;
+  }
+
   async postComment(slug: string, number: number, body: string): Promise<void> {
-    await this.api(slug, `/repos/${slug}/issues/${number}/comments`, {
-      method: "POST",
+    await this.createComment(slug, number, body);
+  }
+
+  /** Rewrite an existing comment. The live-progress mechanism: one comment, edited. */
+  async updateComment(slug: string, commentId: number, body: string): Promise<void> {
+    await this.api(slug, `/repos/${slug}/issues/comments/${commentId}`, {
+      method: "PATCH",
       body: JSON.stringify({ body }),
+    });
+  }
+
+  /** React to a comment — a cheap "seen it" ack, posted before any work starts. */
+  async addReaction(slug: string, commentId: number, content = "eyes"): Promise<void> {
+    await this.api(slug, `/repos/${slug}/issues/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ content }),
     });
   }
 
